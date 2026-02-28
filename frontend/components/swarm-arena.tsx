@@ -46,6 +46,11 @@ function personasToAgentNodes(personas: ActivePersona[]): AgentNode[] {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+// Per-dot physics constants
+const LERP_ACCEL  = 0.003  // pull speed builds by this much per frame
+const MAX_PULL    = 0.055  // maximum lerp fraction per frame (~60 frames to 95%)
+const RETARGET_P  = 0.02   // probability per frame that a dot switches to the speaker
+
 function createSwarmDots(count: number, agentCount: number): SwarmDot[] {
   return Array.from({ length: count }, (_, i) => ({
     id: i,
@@ -55,6 +60,7 @@ function createSwarmDots(count: number, agentCount: number): SwarmDot[] {
     speed: 0.3 + Math.random() * 0.7,
     offsetAngle: Math.random() * Math.PI * 2,
     radius: 0.02 + Math.random() * 0.08,
+    pull: 0,
   }))
 }
 
@@ -72,6 +78,8 @@ interface SwarmForceGraphProps {
   /** Pixel dimensions of the rendering area (set by parent ResizeObserver) */
   width: number
   height: number
+  /** ID of the agent currently speaking; null when no one is speaking */
+  currentTypingAgent: string | null
   /** Called when the pointer enters or leaves an agent node */
   onAgentHover: (idx: number | null, pixelX: number, pixelY: number) => void
 }
@@ -81,6 +89,7 @@ export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
   dotCount,
   width,
   height,
+  currentTypingAgent,
   onAgentHover,
 }) => {
   const dotsRef = useRef<SwarmDot[]>(createSwarmDots(dotCount, agents.length))
@@ -89,13 +98,27 @@ export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
   >([])
   const animationRef = useRef<number>(0)
   const timeRef = useRef(0)
+  // Ref so the animation closure always reads the current speaking agent index
+  // without needing to restart the rAF loop when the prop changes.
+  const speakingAgentRef = useRef<number | null>(null)
+
+  // Keep speakingAgentRef in sync with the currentTypingAgent prop.
+  useEffect(() => {
+    if (!currentTypingAgent) {
+      speakingAgentRef.current = null
+      return
+    }
+    const idx = agents.findIndex((a) => a.id === currentTypingAgent)
+    speakingAgentRef.current = idx >= 0 ? idx : null
+  }, [currentTypingAgent, agents])
 
   // Regenerate dots when count or agent roster changes
   useEffect(() => {
     dotsRef.current = createSwarmDots(dotCount, agents.length)
   }, [dotCount, agents.length])
 
-  // Animation loop
+  // Animation loop — dots maintain their own position (dot.x/y updated in place).
+  // When a dot retargets, its pull resets to 0 so it accelerates smoothly from rest.
   useEffect(() => {
     const dots = dotsRef.current
     let running = true
@@ -104,17 +127,38 @@ export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
       if (!running) return
       timeRef.current += 0.008
       const t = timeRef.current
+      const speakingIdx = speakingAgentRef.current
 
       const positions = dots.map((dot) => {
+        // Gravitational pull: each dot has a small per-frame chance to abandon its
+        // current target and drift toward whoever is currently speaking.
+        if (
+          speakingIdx !== null &&
+          speakingIdx !== dot.targetAgent &&
+          Math.random() < RETARGET_P
+        ) {
+          dot.targetAgent = speakingIdx
+          dot.pull = 0  // restart acceleration so the curve is smooth
+        }
+
         const agent = agents[dot.targetAgent]
-        const wobble = Math.sin(t * dot.speed * 2 + dot.offsetAngle)
-        const drift = Math.cos(t * dot.speed * 1.5 + dot.offsetAngle * 0.7)
-        const pull = Math.min(t * 0.08, 0.85)
+        if (!agent) return { x: dot.x, y: dot.y, targetAgent: dot.targetAgent }
 
-        const x = dot.x + (agent.x - dot.x) * pull + wobble * dot.radius * (1 - pull * 0.6)
-        const y = dot.y + (agent.y - dot.y) * pull + drift * dot.radius * (1 - pull * 0.6)
+        // Orbital wobble around the target anchor
+        const wobble = Math.sin(t * dot.speed * 2 + dot.offsetAngle) * dot.radius
+        const drift  = Math.cos(t * dot.speed * 1.5 + dot.offsetAngle * 0.7) * dot.radius
 
-        return { x, y, targetAgent: dot.targetAgent }
+        const targetX = agent.x + wobble
+        const targetY = agent.y + drift
+
+        // Accumulate lerp speed from 0 → MAX_PULL (slow-start, smooth deceleration)
+        dot.pull = Math.min(dot.pull + LERP_ACCEL, MAX_PULL)
+
+        // Update dot's actual position — exponential ease toward the target orbit
+        dot.x += (targetX - dot.x) * dot.pull
+        dot.y += (targetY - dot.y) * dot.pull
+
+        return { x: dot.x, y: dot.y, targetAgent: dot.targetAgent }
       })
 
       setDotPositions(positions)
@@ -215,6 +259,8 @@ interface SwarmArenaProps {
   metrics: SwarmMetrics
   /** Live personas from the backend — used to build dynamic agent nodes */
   activeAgents: ActivePersona[]
+  /** ID of the agent currently speaking; drives dot gravitational pull */
+  currentTypingAgent: string | null
 }
 
 // Extract the first sentence from a system prompt for the tooltip summary.
@@ -225,7 +271,7 @@ function firstSentence(text: string): string {
 
 const TOOLTIP_W = 224 // px — used for smart left/right placement
 
-export function SwarmArena({ metrics, activeAgents }: SwarmArenaProps) {
+export function SwarmArena({ metrics, activeAgents, currentTypingAgent }: SwarmArenaProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 500 })
 
@@ -292,6 +338,7 @@ export function SwarmArena({ metrics, activeAgents }: SwarmArenaProps) {
         dotCount={metrics.liveNodes}
         width={dimensions.width}
         height={dimensions.height}
+        currentTypingAgent={currentTypingAgent}
         onAgentHover={handleAgentHover}
       />
 

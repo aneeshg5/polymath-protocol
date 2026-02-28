@@ -21,6 +21,8 @@ interface WarRoomProps {
   swarmMetrics: SwarmMetrics
   /** Live personas — forwarded to SwarmArena for dynamic node layout */
   activeAgents: ActivePersona[]
+  /** Current arbiter generation step label; null when idle */
+  verdictStep: string | null
   /** Terminate button handler */
   onTerminate: () => void
 }
@@ -32,13 +34,18 @@ export function WarRoom({
   totalExchanges,
   swarmMetrics,
   activeAgents,
+  verdictStep,
   onTerminate,
 }: WarRoomProps) {
   return (
     <div className="flex flex-1 overflow-hidden">
       {/* Column 1: Adversarial Swarm Arena - 60% */}
       <div className="flex w-[60%] flex-col p-3 pr-0">
-        <SwarmArena metrics={swarmMetrics} activeAgents={activeAgents} />
+        <SwarmArena
+          metrics={swarmMetrics}
+          activeAgents={activeAgents}
+          currentTypingAgent={typingAgent}
+        />
       </div>
 
       {/* Column 2: Live Debate Telemetry - 40% */}
@@ -48,6 +55,7 @@ export function WarRoom({
           isStreaming={isStreaming}
           typingAgent={typingAgent}
           totalExchanges={totalExchanges}
+          verdictStep={verdictStep}
           onTerminate={onTerminate}
         />
       </div>

@@ -82,6 +82,9 @@ export interface UseSimulationReturn {
   /** Error message from a failed Phase 1 fetch or WebSocket; null when clean */
   initError: string | null
 
+  /** Human-readable label for the current arbiter generation step; null when idle */
+  verdictStep: string | null
+
   /** Transition: intake → loading → war-room (real API + WebSocket) */
   initializeSimulation: (file: File, jurisdiction: string) => Promise<void>
 
@@ -116,6 +119,10 @@ export function useSimulation(): UseSimulationReturn {
 
   // ── Init error ──────────────────────────────────────────────────────────
   const [initError, setInitError] = useState<string | null>(null)
+
+  // ── Verdict loading step ─────────────────────────────────────────────────
+  // Null when idle; a human-readable label while terminateSimulation is in flight.
+  const [verdictStep, setVerdictStep] = useState<string | null>(null)
 
   // ── Stable refs ──────────────────────────────────────────────────────────
   // wsRef:               lets cleanup/terminate close the socket from outside the closure
@@ -194,6 +201,12 @@ export function useSimulation(): UseSimulationReturn {
         if (frame.type === "turn_start") {
           // Reset running content buffer for the incoming turn.
           currentTurnContentRef.current = ""
+          // Each new speaker turn nudges convergence toward 98% — reflects the
+          // swarm progressively aligning as the deliberation advances.
+          setSwarmMetrics((prev) => ({
+            ...prev,
+            convergence: Math.min(98, prev.convergence + 2),
+          }))
           // A new agent is about to speak — create a fresh empty message entry.
           const style = resolveAgentStyle(frame.agent_id, activeAgentsRef.current)
           setCurrentTypingAgent(frame.agent_id as string)
@@ -272,23 +285,8 @@ export function useSimulation(): UseSimulationReturn {
     }
   }, [])
 
-  // ── Swarm metrics animation (mock — persists alongside real debate) ──────
-
-  useEffect(() => {
-    if (simulationState !== "war-room") return
-
-    const interval = setInterval(() => {
-      setSwarmMetrics((prev) => {
-        const delta = (Math.random() - 0.35) * 3
-        return {
-          ...prev,
-          convergence: Math.min(98, Math.max(45, prev.convergence + delta)),
-        }
-      })
-    }, 1500)
-
-    return () => clearInterval(interval)
-  }, [simulationState])
+  // Swarm convergence is driven by debate activity — see the turn_start handler
+  // in initializeSimulation where it increments by 2% per new speaker turn.
 
   // ── WebSocket cleanup on unmount ──────────────────────────────────────────
 
@@ -304,7 +302,8 @@ export function useSimulation(): UseSimulationReturn {
   // ── Transition: war-room → arbiter-verdict ──────────────────────────────
 
   const terminateSimulation = useCallback(async () => {
-    // 1. Immediately stop the debate stream.
+    // 1. Immediately stop the debate stream and show the first step.
+    setVerdictStep("Closing debate stream...")
     if (wsRef.current) {
       wsRef.current.close()
       wsRef.current = null
@@ -313,7 +312,10 @@ export function useSimulation(): UseSimulationReturn {
     setCurrentTypingAgent(null)
 
     const simId = simulationIdRef.current
-    if (!simId) return
+    if (!simId) {
+      setVerdictStep(null)
+      return
+    }
 
     // 2. Build the verdict request body from refs (always fresh, no stale closure risk).
     const body = {
@@ -323,6 +325,7 @@ export function useSimulation(): UseSimulationReturn {
     }
 
     try {
+      setVerdictStep("Calling Arbiter Agent...")
       const res = await fetch(verdictApiUrl(simId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -330,6 +333,7 @@ export function useSimulation(): UseSimulationReturn {
       })
       if (!res.ok) throw new Error(`Verdict API ${res.status}: ${await res.text()}`)
 
+      setVerdictStep("Synthesizing verdict...")
       const raw = await res.json()
 
       // 3. Map the snake_case backend response to the camelCase frontend VerdictData shape
@@ -396,11 +400,11 @@ export function useSimulation(): UseSimulationReturn {
       setVerdictData(verdict)
     } catch (err) {
       console.error("Verdict fetch failed:", err)
-      // Surface the error in the existing error banner rather than leaving the
-      // user stranded on a blank screen.
       setInitError(
         err instanceof Error ? err.message : "Arbiter failed to generate a verdict."
       )
+    } finally {
+      setVerdictStep(null)
     }
 
     // 4. Transition regardless of fetch outcome — if fetch failed, the user
@@ -428,6 +432,7 @@ export function useSimulation(): UseSimulationReturn {
     transcriptTurnsRef.current = []
     currentTurnContentRef.current = ""
     setInitError(null)
+    setVerdictStep(null)
     simulationIdRef.current = null
   }, [])
 
@@ -440,6 +445,7 @@ export function useSimulation(): UseSimulationReturn {
     verdictData,
     activeAgents,
     initError,
+    verdictStep,
     initializeSimulation,
     terminateSimulation,
     startNewCase,

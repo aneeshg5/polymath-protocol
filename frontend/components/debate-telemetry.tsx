@@ -11,7 +11,7 @@ import { useEffect, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { OctagonX } from "lucide-react"
+import { OctagonX, Loader2 } from "lucide-react"
 import type { DebateMessage } from "@/lib/types"
 
 // ── Props ───────────────────────────────────────────────────────────────────
@@ -25,6 +25,8 @@ interface DebateTelemetryProps {
   typingAgent: string | null
   /** Total expected message count (for the progress badge) */
   totalExchanges: number
+  /** Current arbiter generation step; null when idle */
+  verdictStep: string | null
   /** Called when the user clicks "Terminate Simulation" */
   onTerminate: () => void
 }
@@ -36,8 +38,10 @@ export function DebateTelemetry({
   isStreaming,
   typingAgent,
   totalExchanges,
+  verdictStep,
   onTerminate,
 }: DebateTelemetryProps) {
+  const isTerminating = verdictStep !== null
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll to bottom on new messages
@@ -133,15 +137,47 @@ export function DebateTelemetry({
       </div>
 
       {/* Terminate button */}
-      <div className="border-t border-border/60 p-3">
+      <div className="border-t border-border/60 p-3 space-y-2">
         <Button
           onClick={onTerminate}
-          className="w-full gap-2 border border-red-800/40 bg-red-950/50 text-red-400 transition-colors hover:bg-red-900/60 hover:text-red-300"
+          disabled={isTerminating}
+          className="w-full gap-2 border border-red-800/40 bg-red-950/50 text-red-400 transition-colors hover:bg-red-900/60 hover:text-red-300 disabled:cursor-wait disabled:opacity-80"
           variant="ghost"
         >
-          <OctagonX className="size-4" />
-          {"Terminate Simulation & Generate Verdict"}
+          {isTerminating ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <OctagonX className="size-4" />
+          )}
+          {isTerminating ? "Generating Verdict..." : "Terminate Simulation & Generate Verdict"}
         </Button>
+
+        {/* Animated step label — fades each label in/out as the step changes */}
+        <AnimatePresence mode="wait">
+          {verdictStep && (
+            <motion.div
+              key={verdictStep}
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              transition={{ duration: 0.2 }}
+              className="flex items-center justify-center gap-2"
+            >
+              <div className="flex gap-0.5">
+                {[0, 150, 300].map((delay) => (
+                  <span
+                    key={delay}
+                    className="inline-block size-1 animate-bounce rounded-full bg-gold opacity-60"
+                    style={{ animationDelay: `${delay}ms` }}
+                  />
+                ))}
+              </div>
+              <span className="font-mono text-[10px] text-muted-foreground">
+                {verdictStep}
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   )

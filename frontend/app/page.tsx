@@ -30,6 +30,7 @@ export default function Page() {
     terminateSimulation,
     startNewCase,
     initError,
+    verdictStep,
   } = useSimulation()
 
   return (
@@ -50,6 +51,7 @@ export default function Page() {
             totalExchanges={activeAgents.length * DEBATE_ROUNDS}
             swarmMetrics={swarmMetrics}
             activeAgents={activeAgents}
+            verdictStep={verdictStep}
             onTerminate={terminateSimulation}
           />
         )}

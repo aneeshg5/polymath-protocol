@@ -63,7 +63,7 @@ export interface DebateMessage {
 
 /** Node position in the force-directed graph (normalized 0..1) */
 export interface AgentNode {
-  id: AgentKey
+  id: string           // arbitrary backend-generated ID (e.g. "plaintiff", "alpha")
   label: string
   archetype: string
   color: string
@@ -74,12 +74,13 @@ export interface AgentNode {
 /** A single swarm dot with drift/persuasion parameters */
 export interface SwarmDot {
   id: number
-  x: number
+  x: number            // current rendered position (mutated every frame)
   y: number
   targetAgent: number  // index into agents array
   speed: number
   offsetAngle: number
   radius: number
+  pull: number         // per-dot lerp speed (0 → MAX_PULL); reset to 0 on retarget
 }
 
 /** Real-time metrics overlay for the swarm arena */

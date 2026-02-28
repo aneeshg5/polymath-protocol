@@ -6,15 +6,15 @@
 
 import { SwarmArena } from "@/components/swarm-arena"
 import { DebateTelemetry } from "@/components/debate-telemetry"
-import type { DebateMessage, SwarmMetrics, AgentKey } from "@/lib/types"
+import type { DebateMessage, SwarmMetrics } from "@/lib/types"
 
 interface WarRoomProps {
   /** Debate messages rendered in the transcript */
   messages: DebateMessage[]
   /** Whether a message is currently streaming */
   isStreaming: boolean
-  /** Agent currently typing (if any) */
-  typingAgent: AgentKey | null
+  /** ID of the agent currently typing (if any) */
+  typingAgent: string | null
   /** Total expected debate exchanges */
   totalExchanges: number
   /** Real-time swarm metrics */
@@ -39,7 +39,7 @@ export function WarRoom({
       </div>
 
       {/* Column 2: Live Debate Telemetry - 40% */}
-      <div className="flex w-[40%]">
+      <div className="flex w-[40%] overflow-hidden">
         <DebateTelemetry
           messages={messages}
           isStreaming={isStreaming}

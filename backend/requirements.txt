@@ -4,6 +4,7 @@ openai>=1.40.0
 PyMuPDF>=1.24.0
 tavily-python>=0.3.0
 python-multipart>=0.0.9
+modal>=1.0.0
 
 annotated-doc==0.0.4
 annotated-types==0.7.0

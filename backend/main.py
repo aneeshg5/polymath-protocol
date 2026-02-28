@@ -10,13 +10,20 @@ from contextlib import asynccontextmanager
 
 import fitz  # PyMuPDF
 import instructor
+import modal
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
 from tavily import TavilyClient
 
-from models import PreProcessorOutput, SimulationInitResponse
+from models import (
+    PreProcessorOutput,
+    SimulationInitResponse,
+    ResearchPhaseRequest,
+    ResearchPhaseResponse,
+    BriefingDocument,
+)
 
 load_dotenv()
 
@@ -182,6 +189,48 @@ async def initialize_simulation(
     )
 
 
+# ── POST /api/v1/simulation/{sim_id}/research ────────────────────────────────
+
+@app.post("/api/v1/simulation/{sim_id}/research", response_model=ResearchPhaseResponse)
+async def execute_research_phase(
+    sim_id: str,
+    request: ResearchPhaseRequest,
+) -> ResearchPhaseResponse:
+    """Dispatch all agent personas to Modal in parallel via .map() and collect
+    their Internal Legal Briefing Documents.
+
+    Modal's .map() is synchronous and blocking, so it runs in a thread pool to
+    avoid freezing the event loop during GPU inference.
+    """
+    def _run_modal_research() -> list[dict]:
+        # from_name() is the Modal v1.x API — Cls.lookup() was removed in v1.0.
+        AgentEngine = modal.Cls.from_name("polymath-legal-fleet", "LegalAgentEngine")
+        engine = AgentEngine()
+
+        # .map() fans out one call per persona dict concurrently across Modal
+        # workers, then yields results as each finishes. list() blocks until all
+        # are complete.
+        return list(
+            engine.execute_research_phase.map(
+                [p.model_dump() for p in request.personas],
+                kwargs={"core_facts": request.core_facts},
+            )
+        )
+
+    try:
+        raw_results: list[dict] = await asyncio.to_thread(_run_modal_research)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Modal inference failed: {exc}",
+        )
+
+    return ResearchPhaseResponse(
+        sim_id=sim_id,
+        briefings=[BriefingDocument(**r) for r in raw_results],
+    )
+
+
 # ── GET / (health check) ─────────────────────────────────────────────────────
 
 @app.get("/")
@@ -189,18 +238,103 @@ async def root():
     return {"status": "Polymath API is running"}
 
 
-# ── WS /ws/debate (stub — debate orchestration goes here) ────────────────────
+# ── WS /ws/debate ─────────────────────────────────────────────────────────────
+#
+# Expected client payload (single JSON message on connect):
+# {
+#   "personas":  [{"id": str, "label": str, "system_prompt": str, ...}, ...],
+#   "briefings": [{"agent_id": str, "briefing_doc": str}, ...]
+# }
+#
+# Frame types sent to the client:
+#   {"type": "status",         "message": str}
+#   {"type": "turn_start",     "agent_id": str, "round": int}
+#   {"type": "chunk",          "agent_id": str, "content": str}
+#   {"type": "turn_end",       "agent_id": str}
+#   {"type": "debate_complete"}
+#   {"type": "error",          "message": str}
+
+DEBATE_ROUNDS = 3
 
 @app.websocket("/ws/debate")
 async def debate_websocket(websocket: WebSocket):
     await websocket.accept()
     try:
-        while True:
-            data = await websocket.receive_text()
-            _payload = json.loads(data)
-            # TO-DO: trigger Modal inference and swarm logic here
-            await websocket.send_text(
-                json.dumps({"type": "status", "message": "Debate started..."})
+        # ── 1. Receive debate configuration ──────────────────────────────────
+        raw = await websocket.receive_text()
+        payload = json.loads(raw)
+
+        personas: list[dict] = payload["personas"]
+        briefings: dict[str, str] = {
+            b["agent_id"]: b["briefing_doc"]
+            for b in payload["briefings"]
+        }
+
+        await websocket.send_json(
+            {"type": "status", "message": "Connecting to Modal inference fleet..."}
+        )
+
+        # ── 2. Resolve the Modal class — from_name() is the Modal v1.x API ─────
+        AgentEngine = await asyncio.to_thread(
+            modal.Cls.from_name, "polymath-legal-fleet", "LegalAgentEngine"
+        )
+        engine = AgentEngine()
+
+        await websocket.send_json(
+            {"type": "status", "message": f"Debate starting — {DEBATE_ROUNDS} rounds, {len(personas)} agents."}
+        )
+
+        # ── 3. Debate loop ────────────────────────────────────────────────────
+        debate_history: list[dict] = []
+
+        for round_num in range(1, DEBATE_ROUNDS + 1):
+            await websocket.send_json(
+                {"type": "status", "message": f"Round {round_num} of {DEBATE_ROUNDS}"}
             )
-    except Exception as e:
-        print(f"Connection closed: {e}")
+
+            for persona in personas:
+                agent_id: str = persona["id"]
+                briefing_doc: str = briefings.get(agent_id, "")
+
+                await websocket.send_json(
+                    {"type": "turn_start", "agent_id": agent_id, "round": round_num}
+                )
+
+                # remote_gen() is a synchronous generator — iterate it in a
+                # thread pool so the event loop stays free for other coroutines.
+                # We pass a snapshot copy of debate_history to avoid race
+                # conditions if anything mutates it while the thread runs.
+                history_snapshot = list(debate_history)
+                chunks: list[str] = await asyncio.to_thread(
+                    list,
+                    engine.generate_debate_turn.remote_gen(
+                        persona, briefing_doc, history_snapshot
+                    ),
+                )
+
+                # Stream the collected chunks to the frontend one by one.
+                full_response = ""
+                for chunk in chunks:
+                    await websocket.send_json(
+                        {"type": "chunk", "agent_id": agent_id, "content": chunk}
+                    )
+                    full_response += chunk
+
+                # Append completed turn to history for subsequent agents to read.
+                debate_history.append({
+                    "agent_id": agent_id,
+                    "label": persona.get("label", agent_id),
+                    "content": full_response.strip(),
+                })
+
+                await websocket.send_json({"type": "turn_end", "agent_id": agent_id})
+
+        # ── 4. Signal completion ──────────────────────────────────────────────
+        await websocket.send_json({"type": "debate_complete"})
+
+    except Exception as exc:
+        print(f"WebSocket debate error: {exc}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(exc)})
+        except Exception:
+            pass  # client already disconnected

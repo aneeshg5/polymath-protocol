@@ -38,3 +38,23 @@ class PreProcessorOutput(BaseModel):
 
 class SimulationInitResponse(PreProcessorOutput):
     simulation_id: str
+
+
+# ── Research Phase ────────────────────────────────────────────────────────────
+
+class ResearchPhaseRequest(BaseModel):
+    """Request body for POST /api/v1/simulation/{sim_id}/research."""
+    core_facts: str
+    personas: List[Persona]
+
+
+class BriefingDocument(BaseModel):
+    """A single agent's Internal Legal Briefing Document returned by Modal."""
+    agent_id: str
+    briefing_doc: str
+
+
+class ResearchPhaseResponse(BaseModel):
+    """Response envelope for the research phase endpoint."""
+    sim_id: str
+    briefings: List[BriefingDocument]

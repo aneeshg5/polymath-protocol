@@ -12,8 +12,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { OctagonX } from "lucide-react"
-import type { DebateMessage, AgentKey } from "@/lib/types"
-import { AGENT_DEBATE_STYLES, MOCK_DEBATE_SCRIPT } from "@/lib/mock-data"
+import type { DebateMessage } from "@/lib/types"
 
 // ── Props ───────────────────────────────────────────────────────────────────
 
@@ -22,8 +21,8 @@ interface DebateTelemetryProps {
   messages: DebateMessage[]
   /** Whether a new message is being streamed/generated */
   isStreaming: boolean
-  /** The agent currently "typing", if any */
-  typingAgent: AgentKey | null
+  /** ID of the agent currently "typing", if any */
+  typingAgent: string | null
   /** Total expected message count (for the progress badge) */
   totalExchanges: number
   /** Called when the user clicks "Terminate Simulation" */
@@ -47,11 +46,20 @@ export function DebateTelemetry({
     if (el) el.scrollTop = el.scrollHeight
   }, [messages.length])
 
-  // Resolve typing agent styles
-  const typingStyle = typingAgent ? AGENT_DEBATE_STYLES[typingAgent] : null
+  // Derive the typing indicator style from the most recent message — this works
+  // for any agent ID, not just the four hardcoded mock keys.
+  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null
+  const typingStyle =
+    isStreaming && typingAgent && lastMessage
+      ? {
+          label: lastMessage.agent,
+          bgClass: lastMessage.bgClass,
+          textColorClass: lastMessage.textColorClass,
+        }
+      : null
 
   return (
-    <div className="flex w-full flex-col border-l border-border/60 bg-background">
+    <div className="flex h-full w-full flex-col border-l border-border/60 bg-background">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
         <div className="flex items-center gap-2">

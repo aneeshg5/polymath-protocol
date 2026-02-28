@@ -13,7 +13,9 @@ import { LoadingState } from "@/components/loading-state"
 import { WarRoom } from "@/components/war-room"
 import { ArbiterVerdict } from "@/components/arbiter-verdict"
 import { useSimulation } from "@/hooks/use-simulation"
-import { MOCK_DEBATE_SCRIPT } from "@/lib/mock-data"
+
+// 3 debate rounds × number of active agents; matches backend DEBATE_ROUNDS constant
+const DEBATE_ROUNDS = 3
 
 export default function Page() {
   const {
@@ -23,6 +25,7 @@ export default function Page() {
     currentTypingAgent,
     swarmMetrics,
     verdictData,
+    activeAgents,
     initializeSimulation,
     terminateSimulation,
     startNewCase,
@@ -30,9 +33,9 @@ export default function Page() {
   } = useSimulation()
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
+    <div className="flex h-screen flex-col bg-background">
       <Navbar simulationState={simulationState} />
-      <main className="flex flex-1 flex-col">
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {simulationState === "intake" && (
           <IntakeForm onInitialize={initializeSimulation} initError={initError} />
         )}
@@ -44,7 +47,7 @@ export default function Page() {
             messages={debateTranscript}
             isStreaming={isDebateStreaming}
             typingAgent={currentTypingAgent}
-            totalExchanges={MOCK_DEBATE_SCRIPT.length}
+            totalExchanges={activeAgents.length * DEBATE_ROUNDS}
             swarmMetrics={swarmMetrics}
             onTerminate={terminateSimulation}
           />

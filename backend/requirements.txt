@@ -1,3 +1,10 @@
+# New dependencies for the /init pre-processor pipeline
+instructor>=1.4.0
+openai>=1.40.0
+PyMuPDF>=1.24.0
+tavily-python>=0.3.0
+python-multipart>=0.0.9
+
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.12.1

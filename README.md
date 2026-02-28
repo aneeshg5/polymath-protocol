@@ -16,53 +16,85 @@ This is a monorepo containing three distinct environments. **Make sure you are i
 Your UI development zone. Put v0 components in `src/components`.
 
 # Navigate to the directory
+```bash
 cd frontend
+```
 
-# Install dependencies (only needed the first time)
+### Install dependencies (only needed the first time)
+```bash
 npm install
+```
 
-# Start the development server
+### Start the development server
+```bash
 npm run dev
+```
 
 ### 2. Backend (FastAPI)
 
-# Navigate to the directory
+### Navigate to the directory
+```bash
 cd backend
+```
 
-# Create a virtual environment (only needed the first time)
+### Create a virtual environment (only needed the first time)
+```bash
 python -m venv venv
+```
 
-# Activate the virtual environment
-# On Mac/Linux:
+### Activate the virtual environment
+### On Mac/Linux:
+```bash
 source venv/bin/activate
-# On Windows:
-# venv\Scripts\activate
+```
+### On Windows:
+```bash
+venv\Scripts\activate
+```
 
-# Install dependencies
+### Install dependencies
+```bash
 pip install -r requirements.txt
+```
 
-# Run the server with auto-reload
+### Run the server with auto-reload
+```bash
 uvicorn main:app --reload
+```
 
 ### 3. Modal Inference
 
-# Navigate to the directory
+### Navigate to the directory
+```bash
 cd modal_inference
+```
 
-# Create a virtual environment (only needed the first time)
+### Create a virtual environment (only needed the first time)
+```bash
 python -m venv venv
+```
 
-# Activate the virtual environment
-# On Mac/Linux:
+### Activate the virtual environment
+### On Mac/Linux:
+```bash
 source venv/bin/activate
-# On Windows:
-# venv\Scripts\activate
+```
+### On Windows:
+```bash
+venv\Scripts\activate
+```
 
-# Install dependencies
+### Install dependencies
+```bash
 pip install -r requirements.txt
+```
 
-# Authenticate with Modal (you only need to do this once)
+### Authenticate with Modal (you only need to do this once)
+```bash
 modal setup
+```
 
-# Run the test script to ensure it reaches the cloud GPUs
+### Run the test script to ensure it reaches the cloud GPUs
+```bash
 modal run inference.py
+```

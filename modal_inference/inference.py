@@ -101,57 +101,83 @@ class LegalAgentEngine:
     @modal.method(is_generator=True)
     def generate_debate_turn(
         self,
-        persona_dict: dict,
+        persona: dict,
         briefing_doc: str,
         debate_history: list,
+        all_personas: list,
     ):
-        """Stream a 2-paragraph adversarial debate turn for one agent.
+        """Stream a rapid-fire adversarial debate turn for one agent.
 
-        Uses the synchronous vLLM LLM to generate the full response, then
-        yields it in 4-word chunks so the FastAPI WebSocket can stream tokens
-        to the frontend as they arrive.
+        Hard-capped at 150 tokens per turn so the debate stays punchy. Each
+        turn after the first is explicitly directed to attack the most recent
+        opposing argument rather than monologuing from its own brief.
 
         Args:
-            persona_dict:   Agent identity dict (id, label, system_prompt).
+            persona:        The speaking agent's dict (id, label, archetype_name,
+                            system_prompt) — matches the Persona shape from /init.
             briefing_doc:   The agent's Internal Legal Briefing from Phase 1.
-            debate_history: Ordered list of prior turns —
+            debate_history: Ordered prior turns —
                             [{"agent_id": str, "label": str, "content": str}, ...]
-                            Capped to the last 6 turns inside the prompt to
-                            manage context window size.
+            all_personas:   Full list of every agent in the simulation. Used to
+                            build a named roster so agents address each other
+                            by label rather than using generic terms.
 
         Yields:
-            str: successive word-group chunks of the generated argument.
+            str: successive 3-word chunks of the generated argument.
         """
         from vllm import SamplingParams
 
-        # Build the debate history section — cap at last 6 turns to avoid
-        # overflowing the 8k context window of Llama-3-8B with long debates.
-        if debate_history:
-            history_lines = "\n".join(
-                f"[{t['label']}]:\n{t['content']}"
-                for t in debate_history[-6:]
-            )
+        # Hard cap: 150 tokens forces punchy, 1–3 sentence responses.
+        # repetition_penalty discourages the model from looping on stock phrases.
+        sampling_params = SamplingParams(
+            temperature=0.7,
+            max_tokens=150,
+            repetition_penalty=1.1,
+        )
+
+        # Build a named roster of every participant so the model can address
+        # opponents by their specific label rather than "opposing counsel".
+        roster = "\n".join(
+            f"- {p['label']} ({p['archetype_name']})"
+            for p in all_personas
+        )
+
+        if not debate_history:
+            # Opening statement — no opponent to rebut yet.
             user_content = (
-                f"DEBATE HISTORY (most recent exchanges):\n\n{history_lines}\n\n"
-                "Based on the debate above and your internal briefing, formulate a "
-                "sharp 2-paragraph adversarial argument.\n"
-                "  Paragraph 1 — State your strongest legal position clearly.\n"
-                "  Paragraph 2 — Directly attack the weakest point in the "
-                "opposition's most recent argument with specific legal counter-evidence."
+                f"You are {persona['label']} ({persona['archetype_name']}).\n"
+                f"Your strategy: {briefing_doc}\n\n"
+                f"You are in a multi-party legal debate with these individuals:\n{roster}\n\n"
+                "Give a punchy, aggressive OPENING STATEMENT in maximum 3 sentences "
+                "outlining your core legal argument. "
+                "Address the other participants by their specific label when relevant. "
+                "Do not use generic terms like 'opposing counsel'. No filler words."
             )
         else:
-            # First speaker of Round 1 has no history to rebut.
+            # Extract only the immediately preceding turn so the 8B model's
+            # attention focuses on rebuttal rather than summarising the whole history.
+            last_speaker = debate_history[-1]["label"]
+            last_message = debate_history[-1]["content"]
+
             user_content = (
-                "The debate is beginning. Based on your internal briefing, open "
-                "with a commanding 2-paragraph legal argument that establishes your "
-                "core theory and pre-empts the strongest counter-positions."
+                f"You are {persona['label']} ({persona['archetype_name']}).\n"
+                f"Your strategy: {briefing_doc}\n\n"
+                f"You are in a multi-party legal debate with these individuals:\n{roster}\n\n"
+                f"{last_speaker} just argued:\n"
+                f'"{last_message}"\n\n'
+                f"DIRECTLY ATTACK AND DISMANTLE {last_speaker}'s argument. "
+                "Point out the specific legal flaw, logical fallacy, or weak precedent "
+                "in what they said, then counter it with your strategy. "
+                "Address participants by their specific label — never say 'opposing counsel'. "
+                "Keep it UNDER 3 SENTENCES. No pleasantries."
             )
 
+        # Llama 3 Instruct requires the chat-ML special tokens; plain prompts
+        # cause the model to ignore the instruction and ramble.
         prompt = (
             "<|begin_of_text|>"
             "<|start_header_id|>system<|end_header_id|>\n\n"
-            f"{persona_dict['system_prompt']}\n\n"
-            f"Your Internal Legal Briefing:\n{briefing_doc}"
+            f"{persona['system_prompt']}"
             "<|eot_id|>"
             "<|start_header_id|>user<|end_header_id|>\n\n"
             f"{user_content}"
@@ -159,23 +185,20 @@ class LegalAgentEngine:
             "<|start_header_id|>assistant<|end_header_id|>\n\n"
         )
 
-        sampling_params = SamplingParams(
-            temperature=0.8,
-            top_p=0.9,
-            max_tokens=512,
-        )
-
         outputs = self.llm.generate([prompt], sampling_params)
         full_text = outputs[0].outputs[0].text.strip()
 
-        # Yield in 4-word groups. The space suffix ensures words re-join cleanly
-        # on the frontend without needing any separator logic.
-        words = full_text.split(" ")
-        chunk_size = 4
+        # Strip common LLM formatting artifacts that look bad in the UI.
+        for artifact in ("**Paragraph 1:**", "**Argument:**", "**Opening Statement:**"):
+            full_text = full_text.replace(artifact, "")
+        full_text = full_text.strip()
+
+        # Yield in 3-word groups with a trailing space so the frontend can
+        # concatenate chunks directly without any separator logic.
+        words = full_text.split()
+        chunk_size = 3
         for i in range(0, len(words), chunk_size):
             chunk = " ".join(words[i : i + chunk_size])
-            # Add a trailing space on every chunk except the last so tokens
-            # concatenate correctly when the frontend appends them.
             if i + chunk_size < len(words):
                 chunk += " "
             yield chunk

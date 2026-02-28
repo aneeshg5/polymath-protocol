@@ -11,17 +11,47 @@
 import { useEffect, useRef, useState, useMemo, type FC } from "react"
 import { motion } from "framer-motion"
 import { Activity, Globe, Target } from "lucide-react"
-import type { AgentNode, SwarmDot, SwarmMetrics } from "@/lib/types"
-import { AGENT_NODES } from "@/lib/mock-data"
+import type { AgentNode, SwarmDot, SwarmMetrics, ActivePersona } from "@/lib/types"
+
+// ── Color palette & node builder ─────────────────────────────────────────────
+// Colors cycle through the same palette used by the debate transcript so the
+// arena and the chat panel always share the same per-agent colour.
+
+const AGENT_COLOR_PALETTE = [
+  "#d97706", // amber
+  "#0ea5e9", // sky
+  "#10b981", // emerald
+  "#a855f7", // purple
+  "#f43f5e", // rose
+  "#06b6d4", // cyan
+]
+
+function personasToAgentNodes(personas: ActivePersona[]): AgentNode[] {
+  const n = personas.length
+  if (n === 0) return []
+  return personas.map((persona, i) => {
+    // Distribute agents evenly around a circle. Starting at -π/2 places the
+    // first agent at the top rather than the right edge.
+    const angle = (2 * Math.PI * i) / n - Math.PI / 2
+    return {
+      id: persona.id,
+      label: persona.label,
+      archetype: persona.archetype_name,
+      color: AGENT_COLOR_PALETTE[i % AGENT_COLOR_PALETTE.length],
+      x: 0.5 + 0.32 * Math.cos(angle),
+      y: 0.5 + 0.32 * Math.sin(angle),
+    }
+  })
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function createSwarmDots(count: number): SwarmDot[] {
+function createSwarmDots(count: number, agentCount: number): SwarmDot[] {
   return Array.from({ length: count }, (_, i) => ({
     id: i,
     x: 0.15 + Math.random() * 0.7,
     y: 0.15 + Math.random() * 0.7,
-    targetAgent: Math.floor(Math.random() * 4),
+    targetAgent: Math.floor(Math.random() * Math.max(1, agentCount)),
     speed: 0.3 + Math.random() * 0.7,
     offsetAngle: Math.random() * Math.PI * 2,
     radius: 0.02 + Math.random() * 0.08,
@@ -50,17 +80,17 @@ export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
   width,
   height,
 }) => {
-  const dotsRef = useRef<SwarmDot[]>(createSwarmDots(dotCount))
+  const dotsRef = useRef<SwarmDot[]>(createSwarmDots(dotCount, agents.length))
   const [dotPositions, setDotPositions] = useState<
     { x: number; y: number; targetAgent: number }[]
   >([])
   const animationRef = useRef<number>(0)
   const timeRef = useRef(0)
 
-  // Regenerate dots if count changes
+  // Regenerate dots when count or agent roster changes
   useEffect(() => {
-    dotsRef.current = createSwarmDots(dotCount)
-  }, [dotCount])
+    dotsRef.current = createSwarmDots(dotCount, agents.length)
+  }, [dotCount, agents.length])
 
   // Animation loop
   useEffect(() => {
@@ -213,11 +243,16 @@ export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
 interface SwarmArenaProps {
   /** Real-time metrics fed from the useSimulation hook */
   metrics: SwarmMetrics
+  /** Live personas from the backend — used to build dynamic agent nodes */
+  activeAgents: ActivePersona[]
 }
 
-export function SwarmArena({ metrics }: SwarmArenaProps) {
+export function SwarmArena({ metrics, activeAgents }: SwarmArenaProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 500 })
+
+  // Recompute node positions whenever the persona list changes
+  const agentNodes = useMemo(() => personasToAgentNodes(activeAgents), [activeAgents])
 
   useEffect(() => {
     const el = containerRef.current
@@ -249,7 +284,7 @@ export function SwarmArena({ metrics }: SwarmArenaProps) {
 
       {/* Force graph — swap this component for react-force-graph-2d later */}
       <SwarmForceGraph
-        agents={AGENT_NODES}
+        agents={agentNodes}
         dotCount={metrics.liveNodes}
         width={dimensions.width}
         height={dimensions.height}

@@ -49,6 +49,7 @@ export default function Page() {
             typingAgent={currentTypingAgent}
             totalExchanges={activeAgents.length * DEBATE_ROUNDS}
             swarmMetrics={swarmMetrics}
+            activeAgents={activeAgents}
             onTerminate={terminateSimulation}
           />
         )}

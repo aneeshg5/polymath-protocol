@@ -308,7 +308,7 @@ async def debate_websocket(websocket: WebSocket):
                 chunks: list[str] = await asyncio.to_thread(
                     list,
                     engine.generate_debate_turn.remote_gen(
-                        persona, briefing_doc, history_snapshot
+                        persona, briefing_doc, history_snapshot, personas
                     ),
                 )
 

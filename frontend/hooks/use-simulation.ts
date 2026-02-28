@@ -16,13 +16,15 @@ import type {
   AgentKey,
   ActivePersona,
 } from "@/lib/types"
-import { AGENT_DEBATE_STYLES, getMockVerdictData } from "@/lib/mock-data"
+import { AGENT_DEBATE_STYLES } from "@/lib/mock-data"
 
 // ── API / WS URLs ─────────────────────────────────────────────────────────────
 
 const INIT_API_URL = "http://localhost:8000/api/v1/simulation/init"
 const researchApiUrl = (simId: string) =>
   `http://localhost:8000/api/v1/simulation/${simId}/research`
+const verdictApiUrl = (simId: string) =>
+  `http://localhost:8000/api/v1/simulation/${simId}/verdict`
 const WS_DEBATE_URL = "ws://localhost:8000/ws/debate"
 
 // ── Dynamic agent style resolution ───────────────────────────────────────────
@@ -83,8 +85,8 @@ export interface UseSimulationReturn {
   /** Transition: intake → loading → war-room (real API + WebSocket) */
   initializeSimulation: (file: File, jurisdiction: string) => Promise<void>
 
-  /** Transition: war-room → arbiter-verdict (terminates the debate) */
-  terminateSimulation: () => void
+  /** Transition: war-room → arbiter-verdict (calls Arbiter API, then transitions) */
+  terminateSimulation: () => Promise<void>
 
   /** Transition: arbiter-verdict → intake (resets everything) */
   startNewCase: () => void
@@ -116,11 +118,19 @@ export function useSimulation(): UseSimulationReturn {
   const [initError, setInitError] = useState<string | null>(null)
 
   // ── Stable refs ──────────────────────────────────────────────────────────
-  // wsRef: lets cleanup/terminate close the socket from outside the closure
-  // activeAgentsRef: gives onmessage always-fresh persona list without stale closure
+  // wsRef:               lets cleanup/terminate close the socket from outside the closure
+  // activeAgentsRef:     gives onmessage always-fresh persona list without stale closures
+  // jurisdictionRef:     stored so terminateSimulation can send it to the verdict API
+  // geographicBiasesRef: stored so the Arbiter can weight the jury swarm correctly
+  // transcriptTurnsRef:  accumulates completed turns in backend shape {agent_id, label, content}
+  // currentTurnContentRef: running concatenation of chunks for the turn currently in flight
   const simulationIdRef = useRef<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const activeAgentsRef = useRef<ActivePersona[]>([])
+  const jurisdictionRef = useRef<string>("")
+  const geographicBiasesRef = useRef<Record<string, unknown>[]>([])
+  const transcriptTurnsRef = useRef<{ agent_id: string; label: string; content: string }[]>([])
+  const currentTurnContentRef = useRef<string>("")
 
   // ── Transition: intake → loading → war-room ─────────────────────────────
 
@@ -146,6 +156,8 @@ export function useSimulation(): UseSimulationReturn {
       const coreFacts: string = initData.core_facts ?? ""
 
       simulationIdRef.current = simId
+      jurisdictionRef.current = jurisdiction
+      geographicBiasesRef.current = (initData.geographic_biases ?? []) as Record<string, unknown>[]
       activeAgentsRef.current = personas
       setActiveAgents(personas)
 
@@ -163,6 +175,7 @@ export function useSimulation(): UseSimulationReturn {
       const { briefings } = await researchRes.json()
 
       // ── Phase 2: enter War Room and open WebSocket ───────────────────────
+      transcriptTurnsRef.current = []
       setSimulationState("war-room")
       setIsDebateStreaming(true)
       setDebateTranscript([])
@@ -179,6 +192,8 @@ export function useSimulation(): UseSimulationReturn {
         const frame = JSON.parse(event.data as string)
 
         if (frame.type === "turn_start") {
+          // Reset running content buffer for the incoming turn.
+          currentTurnContentRef.current = ""
           // A new agent is about to speak — create a fresh empty message entry.
           const style = resolveAgentStyle(frame.agent_id, activeAgentsRef.current)
           setCurrentTypingAgent(frame.agent_id as string)
@@ -199,7 +214,8 @@ export function useSimulation(): UseSimulationReturn {
             },
           ])
         } else if (frame.type === "chunk") {
-          // Append the incoming text chunk to the last message in the transcript.
+          // Accumulate into the ref (for the verdict payload) and into React state (for the UI).
+          currentTurnContentRef.current += (frame.content ?? "")
           setDebateTranscript((prev) => {
             if (prev.length === 0) return prev
             const updated = [...prev]
@@ -210,6 +226,16 @@ export function useSimulation(): UseSimulationReturn {
             return updated
           })
         } else if (frame.type === "turn_end") {
+          // Snapshot the completed turn into the structured list for the Arbiter API.
+          const turnLabel =
+            activeAgentsRef.current.find((p) => p.id === frame.agent_id)?.label ??
+            frame.agent_id
+          transcriptTurnsRef.current.push({
+            agent_id: frame.agent_id,
+            label: turnLabel,
+            content: currentTurnContentRef.current.trim(),
+          })
+          currentTurnContentRef.current = ""
           setCurrentTypingAgent(null)
         } else if (frame.type === "debate_complete") {
           setIsDebateStreaming(false)
@@ -277,17 +303,109 @@ export function useSimulation(): UseSimulationReturn {
 
   // ── Transition: war-room → arbiter-verdict ──────────────────────────────
 
-  const terminateSimulation = useCallback(() => {
+  const terminateSimulation = useCallback(async () => {
+    // 1. Immediately stop the debate stream.
     if (wsRef.current) {
       wsRef.current.close()
       wsRef.current = null
     }
-    // TO-DO (BACKEND): POST /api/v1/simulation/${simulationIdRef.current}/terminate
-    // then fetch the real verdict from /api/v1/simulation/${simulationIdRef.current}/verdict
-    setVerdictData(getMockVerdictData())
-    setSimulationState("arbiter-verdict")
     setIsDebateStreaming(false)
     setCurrentTypingAgent(null)
+
+    const simId = simulationIdRef.current
+    if (!simId) return
+
+    // 2. Build the verdict request body from refs (always fresh, no stale closure risk).
+    const body = {
+      jurisdiction: jurisdictionRef.current,
+      geographic_biases: geographicBiasesRef.current,
+      debate_transcript: transcriptTurnsRef.current,
+    }
+
+    try {
+      const res = await fetch(verdictApiUrl(simId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error(`Verdict API ${res.status}: ${await res.text()}`)
+
+      const raw = await res.json()
+
+      // 3. Map the snake_case backend response to the camelCase frontend VerdictData shape
+      //    so ArbiterVerdict renders without any changes.
+      const PALETTE = ["#d97706", "#0ea5e9", "#10b981", "#a855f7", "#f43f5e", "#06b6d4"]
+      const resolveLabel = (agentId: string) =>
+        activeAgentsRef.current.find((p) => p.id === agentId)?.label ?? agentId
+
+      const consensus = (raw.consensus ?? []).map(
+        (c: { agent_id: string; percentage: number }, i: number) => ({
+          name: resolveLabel(c.agent_id),
+          value: c.percentage,
+          color: PALETTE[i % PALETTE.length],
+        })
+      )
+
+      // barData mirrors consensus — same agent order, same colours.
+      const barData = (raw.consensus ?? []).map(
+        (c: { agent_id: string; percentage: number }, i: number) => ({
+          agent: resolveLabel(c.agent_id),
+          nodes: c.percentage,
+          fill: PALETTE[i % PALETTE.length],
+        })
+      )
+
+      const advantages = (raw.advantages ?? []).map(
+        (a: { argument: string; agent_id: string; category: string; weight: number }, i: number) => ({
+          id: i + 1,
+          argument: a.argument,
+          weight: a.weight,
+          agent: resolveLabel(a.agent_id),
+          category: a.category,
+        })
+      )
+
+      const flaws = (raw.flaws ?? []).map(
+        (f: { flaw: string; agent_id: string; severity: string; penalty: number }, i: number) => ({
+          id: i + 1,
+          flaw: f.flaw,
+          severity: f.severity as VerdictData["flaws"][number]["severity"],
+          agent: resolveLabel(f.agent_id),
+          penalty: f.penalty,
+        })
+      )
+
+      const verdict: VerdictData = {
+        simulationId: raw.simulation_id,
+        jurisdiction: raw.jurisdiction,
+        depthLabel: raw.depth ?? "DEEP DELIBERATION",
+        timestamp: new Date().toLocaleString("en-US", {
+          year: "numeric", month: "short", day: "numeric",
+          hour: "2-digit", minute: "2-digit",
+        }),
+        summaryText: raw.summary,
+        compositeMerit: raw.composite_merit_score,
+        confidence: raw.confidence,
+        deliberationRounds: raw.deliberation_rounds,
+        consensus,
+        barData,
+        advantages,
+        flaws,
+      }
+
+      setVerdictData(verdict)
+    } catch (err) {
+      console.error("Verdict fetch failed:", err)
+      // Surface the error in the existing error banner rather than leaving the
+      // user stranded on a blank screen.
+      setInitError(
+        err instanceof Error ? err.message : "Arbiter failed to generate a verdict."
+      )
+    }
+
+    // 4. Transition regardless of fetch outcome — if fetch failed, the user
+    //    will see the error banner; if it succeeded, they see the full report.
+    setSimulationState("arbiter-verdict")
   }, [])
 
   // ── Transition: arbiter-verdict → intake (full reset) ───────────────────
@@ -305,6 +423,10 @@ export function useSimulation(): UseSimulationReturn {
     setVerdictData(null)
     setActiveAgents([])
     activeAgentsRef.current = []
+    jurisdictionRef.current = ""
+    geographicBiasesRef.current = []
+    transcriptTurnsRef.current = []
+    currentTurnContentRef.current = ""
     setInitError(null)
     simulationIdRef.current = null
   }, [])

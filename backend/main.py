@@ -23,6 +23,8 @@ from models import (
     ResearchPhaseRequest,
     ResearchPhaseResponse,
     BriefingDocument,
+    VerdictRequest,
+    VerdictData,
 )
 
 load_dotenv()
@@ -56,6 +58,20 @@ CASE_SUMMARY_SYSTEM_PROMPT = (
     "a highly concise, 5-to-10 word summary of the core legal issue and the involved "
     "parties. Return ONLY the summary, no other text."
 )
+
+ARBITER_MODEL = "gpt-4o"
+
+ARBITER_SYSTEM_PROMPT = """\
+You are the Impartial Judicial Arbiter, an emotionless, highly analytical entity.
+Your task is to review the attached multi-agent adversarial deliberation and the \
+geographic biases of the jurisdiction.
+You must synthesize the logical weight of the arguments, penalize logical fallacies \
+(circular reasoning, straw man, appeal to authority), and calculate how the 100-node \
+demographic jury swarm would mathematically align based on the geographic biases.
+You are completely unbiased. You do not favor the plaintiff or defendant. \
+You only calculate logical merit and precedent alignment.
+Output a strictly factual synthesis.\
+"""
 
 # ── Lifespan: initialise shared clients once at startup ──────────────────────
 
@@ -229,6 +245,66 @@ async def execute_research_phase(
         sim_id=sim_id,
         briefings=[BriefingDocument(**r) for r in raw_results],
     )
+
+
+# ── POST /api/v1/simulation/{sim_id}/verdict ─────────────────────────────────
+
+@app.post("/api/v1/simulation/{sim_id}/verdict", response_model=VerdictData)
+async def generate_verdict(
+    sim_id: str,
+    request: VerdictRequest,
+) -> VerdictData:
+    """Run the Arbiter Agent over the completed debate transcript.
+
+    Formats the full transcript and jurisdictional biases into a structured
+    user message, then calls gpt-4o via the native OpenAI Structured Outputs
+    API (beta.chat.completions.parse) to get a validated VerdictData object.
+    """
+    # 1. Format debate transcript into a readable dialogue string.
+    transcript_text = "\n\n".join(
+        f"[{turn.label}]: {turn.content}"
+        for turn in request.debate_transcript
+    )
+
+    # 2. Format geographic biases as a concise bullet list for the prompt.
+    biases_text = "\n".join(
+        f"- {b.get('demographic_trait', 'Unknown')}: "
+        f"bias_weight={b.get('bias_weight', 0):.2f} — {b.get('description', '')}"
+        for b in request.geographic_biases
+    ) or "No jurisdictional bias data provided."
+
+    user_content = (
+        f"JURISDICTION: {request.jurisdiction}\n\n"
+        f"GEOGRAPHIC & DEMOGRAPHIC BIASES:\n{biases_text}\n\n"
+        f"DEBATE TRANSCRIPT:\n{transcript_text}\n\n"
+        f"SIMULATION ID: {sim_id}\n"
+        f"DEBATE ROUNDS COMPLETED: {len(set(t.agent_id for t in request.debate_transcript))}"
+    )
+
+    try:
+        response = await openai_client.beta.chat.completions.parse(
+            model=ARBITER_MODEL,
+            messages=[
+                {"role": "system", "content": ARBITER_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_content},
+            ],
+            response_format=VerdictData,
+            temperature=0.2,  # low temperature for deterministic, analytical output
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Arbiter LLM call failed: {exc}")
+
+    verdict: VerdictData = response.choices[0].message.parsed
+    if verdict is None:
+        raise HTTPException(status_code=502, detail="Arbiter returned an empty response.")
+
+    # Override fields that the LLM should not generate freely — these are
+    # ground-truth values sourced from the simulation, not LLM inferences.
+    return verdict.model_copy(update={
+        "simulation_id": sim_id,
+        "jurisdiction": request.jurisdiction,
+        "deliberation_rounds": len(set(t.agent_id for t in request.debate_transcript)),
+    })
 
 
 # ── GET / (health check) ─────────────────────────────────────────────────────

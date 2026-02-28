@@ -9,7 +9,7 @@
 "use client"
 
 import { useEffect, useRef, useState, useMemo, type FC } from "react"
-import { motion } from "framer-motion"
+import { motion, AnimatePresence } from "framer-motion"
 import { Activity, Globe, Target } from "lucide-react"
 import type { AgentNode, SwarmDot, SwarmMetrics, ActivePersona } from "@/lib/types"
 
@@ -72,6 +72,8 @@ interface SwarmForceGraphProps {
   /** Pixel dimensions of the rendering area (set by parent ResizeObserver) */
   width: number
   height: number
+  /** Called when the pointer enters or leaves an agent node */
+  onAgentHover: (idx: number | null, pixelX: number, pixelY: number) => void
 }
 
 export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
@@ -79,6 +81,7 @@ export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
   dotCount,
   width,
   height,
+  onAgentHover,
 }) => {
   const dotsRef = useRef<SwarmDot[]>(createSwarmDots(dotCount, agents.length))
   const [dotPositions, setDotPositions] = useState<
@@ -177,63 +180,30 @@ export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
       ))}
 
       {/* Agent nodes */}
-      {agents.map((agent) => (
-        <g key={agent.id}>
-          <circle
-            cx={agent.x * width}
-            cy={agent.y * height}
-            r={32}
-            fill="none"
-            stroke={agent.color}
-            strokeOpacity={0.15}
-            strokeWidth={1}
-          />
-          <circle
-            cx={agent.x * width}
-            cy={agent.y * height}
-            r={48}
-            fill="none"
-            stroke={agent.color}
-            strokeOpacity={0.06}
-            strokeWidth={1}
-            strokeDasharray="3 5"
-          />
-          <circle
-            cx={agent.x * width}
-            cy={agent.y * height}
-            r={20}
-            fill={agent.color}
-            fillOpacity={0.12}
-            stroke={agent.color}
-            strokeOpacity={0.5}
-            strokeWidth={1.5}
-          />
-          <text
-            x={agent.x * width}
-            y={agent.y * height - 28}
-            textAnchor="middle"
-            fill={agent.color}
-            fontSize={11}
-            fontWeight={600}
-            fontFamily="var(--font-sans)"
+      {agents.map((agent, i) => {
+        const cx = agent.x * width
+        const cy = agent.y * height
+        return (
+          <g
+            key={agent.id}
+            style={{ cursor: "pointer" }}
+            onMouseEnter={() => onAgentHover(i, cx, cy)}
+            onMouseLeave={() => onAgentHover(null, 0, 0)}
           >
-            {agent.label}
-          </text>
-          <text
-            x={agent.x * width}
-            y={agent.y * height + 4}
-            textAnchor="middle"
-            fill={agent.color}
-            fontSize={9}
-            fontFamily="var(--font-mono)"
-            opacity={0.7}
-          >
-            {agent.archetype.length > 18
-              ? agent.archetype.substring(0, 16) + "..."
-              : agent.archetype}
-          </text>
-        </g>
-      ))}
+            {/* Invisible wide hit area so small cursors still trigger the hover */}
+            <circle cx={cx} cy={cy} r={52} fill="transparent" />
+            <circle cx={cx} cy={cy} r={32} fill="none" stroke={agent.color} strokeOpacity={0.15} strokeWidth={1} />
+            <circle cx={cx} cy={cy} r={48} fill="none" stroke={agent.color} strokeOpacity={0.06} strokeWidth={1} strokeDasharray="3 5" />
+            <circle cx={cx} cy={cy} r={20} fill={agent.color} fillOpacity={0.12} stroke={agent.color} strokeOpacity={0.5} strokeWidth={1.5} />
+            <text x={cx} y={cy - 28} textAnchor="middle" fill={agent.color} fontSize={11} fontWeight={600} fontFamily="var(--font-sans)">
+              {agent.label}
+            </text>
+            <text x={cx} y={cy + 4} textAnchor="middle" fill={agent.color} fontSize={9} fontFamily="var(--font-mono)" opacity={0.7}>
+              {agent.archetype.length > 18 ? agent.archetype.substring(0, 16) + "…" : agent.archetype}
+            </text>
+          </g>
+        )
+      })}
     </svg>
   )
 }
@@ -247,12 +217,27 @@ interface SwarmArenaProps {
   activeAgents: ActivePersona[]
 }
 
+// Extract the first sentence from a system prompt for the tooltip summary.
+function firstSentence(text: string): string {
+  const match = text.match(/^[^.!?]+[.!?]/)
+  return match ? match[0] : text.slice(0, 120) + "…"
+}
+
+const TOOLTIP_W = 224 // px — used for smart left/right placement
+
 export function SwarmArena({ metrics, activeAgents }: SwarmArenaProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 500 })
 
   // Recompute node positions whenever the persona list changes
   const agentNodes = useMemo(() => personasToAgentNodes(activeAgents), [activeAgents])
+
+  // Hover state: index into activeAgents/agentNodes + pixel anchor in container coords
+  const [hovered, setHovered] = useState<{ idx: number; x: number; y: number } | null>(null)
+
+  const handleAgentHover = (idx: number | null, x: number, y: number) => {
+    setHovered(idx === null ? null : { idx, x, y })
+  }
 
   useEffect(() => {
     const el = containerRef.current
@@ -264,6 +249,25 @@ export function SwarmArena({ metrics, activeAgents }: SwarmArenaProps) {
     obs.observe(el)
     return () => obs.disconnect()
   }, [])
+
+  // Compute tooltip position so it never clips the container edge.
+  const tooltipStyle = useMemo(() => {
+    if (!hovered) return {}
+    const TOOLTIP_H = 96
+    const offset = 18
+    const left =
+      hovered.x + TOOLTIP_W + offset > dimensions.width
+        ? hovered.x - TOOLTIP_W - offset
+        : hovered.x + offset
+    const top = Math.max(
+      8,
+      Math.min(hovered.y - TOOLTIP_H / 2, dimensions.height - TOOLTIP_H - 8)
+    )
+    return { left, top }
+  }, [hovered, dimensions])
+
+  const hoveredPersona = hovered !== null ? activeAgents[hovered.idx] : null
+  const hoveredNode    = hovered !== null ? agentNodes[hovered.idx]    : null
 
   return (
     <div
@@ -288,7 +292,33 @@ export function SwarmArena({ metrics, activeAgents }: SwarmArenaProps) {
         dotCount={metrics.liveNodes}
         width={dimensions.width}
         height={dimensions.height}
+        onAgentHover={handleAgentHover}
       />
+
+      {/* Agent hover tooltip */}
+      <AnimatePresence>
+        {hoveredPersona && hoveredNode && (
+          <motion.div
+            key={hoveredPersona.id}
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.15 }}
+            style={{ ...tooltipStyle, width: TOOLTIP_W, borderColor: hoveredNode.color + "55" }}
+            className="pointer-events-none absolute z-20 rounded-lg border bg-background/95 px-3 py-2.5 shadow-lg backdrop-blur-sm"
+          >
+            <p className="text-[11px] font-semibold" style={{ color: hoveredNode.color }}>
+              {hoveredPersona.label}
+            </p>
+            <p className="font-mono text-[9px] text-muted-foreground">
+              {hoveredPersona.archetype_name}
+            </p>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-foreground/80">
+              {firstSentence(hoveredPersona.system_prompt)}
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Metrics overlay */}
       <motion.div

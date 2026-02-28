@@ -4,7 +4,13 @@ import { useCallback, useState } from "react"
 import { Upload, FileText, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export function FileUploadZone() {
+interface FileUploadZoneProps {
+  /** Called with the first file in the list whenever the selection changes.
+   *  Receives null when all files are removed. */
+  onFileChange?: (file: File | null) => void
+}
+
+export function FileUploadZone({ onFileChange }: FileUploadZoneProps) {
   const [files, setFiles] = useState<File[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
 
@@ -14,19 +20,25 @@ export function FileUploadZone() {
     const droppedFiles = Array.from(e.dataTransfer.files).filter(
       (f) => f.type === "application/pdf" || f.type === "text/plain"
     )
-    setFiles((prev) => [...prev, ...droppedFiles])
-  }, [])
+    const next = [...files, ...droppedFiles]
+    setFiles(next)
+    onFileChange?.(next[0] ?? null)
+  }, [files, onFileChange])
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       const selected = Array.from(e.target.files)
-      setFiles((prev) => [...prev, ...selected])
+      const next = [...files, ...selected]
+      setFiles(next)
+      onFileChange?.(next[0] ?? null)
     }
-  }, [])
+  }, [files, onFileChange])
 
   const removeFile = useCallback((index: number) => {
-    setFiles((prev) => prev.filter((_, i) => i !== index))
-  }, [])
+    const next = files.filter((_, i) => i !== index)
+    setFiles(next)
+    onFileChange?.(next[0] ?? null)
+  }, [files, onFileChange])
 
   return (
     <div className="flex flex-col gap-3">

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Zap, Scale } from "lucide-react"
+import { Zap, Scale, AlertCircle } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import {
@@ -19,28 +19,28 @@ import { FileUploadZone } from "@/components/file-upload-zone"
 
 const jurisdictions = [
   { group: "Illinois", items: [
-    { value: "cook-county-il", label: "Cook County, IL" },
-    { value: "dupage-county-il", label: "DuPage County, IL" },
-    { value: "lake-county-il", label: "Lake County, IL" },
+    { label: "Cook County, IL" },
+    { label: "DuPage County, IL" },
+    { label: "Lake County, IL" },
   ]},
   { group: "New York", items: [
-    { value: "manhattan-ny", label: "Manhattan, NY" },
-    { value: "brooklyn-ny", label: "Brooklyn, NY" },
-    { value: "queens-ny", label: "Queens, NY" },
+    { label: "Manhattan, NY" },
+    { label: "Brooklyn, NY" },
+    { label: "Queens, NY" },
   ]},
   { group: "California", items: [
-    { value: "los-angeles-ca", label: "Los Angeles County, CA" },
-    { value: "san-francisco-ca", label: "San Francisco, CA" },
-    { value: "san-diego-ca", label: "San Diego County, CA" },
+    { label: "Los Angeles County, CA" },
+    { label: "San Francisco, CA" },
+    { label: "San Diego County, CA" },
   ]},
   { group: "Texas", items: [
-    { value: "harris-county-tx", label: "Harris County, TX" },
-    { value: "dallas-county-tx", label: "Dallas County, TX" },
-    { value: "bexar-county-tx", label: "Bexar County, TX" },
+    { label: "Harris County, TX" },
+    { label: "Dallas County, TX" },
+    { label: "Bexar County, TX" },
   ]},
   { group: "Florida", items: [
-    { value: "miami-dade-fl", label: "Miami-Dade County, FL" },
-    { value: "broward-county-fl", label: "Broward County, FL" },
+    { label: "Miami-Dade County, FL" },
+    { label: "Broward County, FL" },
   ]},
 ]
 
@@ -52,9 +52,34 @@ function getDepthLabel(value: number) {
   return "Deep Deliberation"
 }
 
-export function IntakeForm({ onInitialize }: { onInitialize: () => void }) {
+interface IntakeFormProps {
+  onInitialize: (file: File, jurisdiction: string) => void
+  /** Error message from the hook if the last /init call failed */
+  initError?: string | null
+}
+
+export function IntakeForm({ onInitialize, initError }: IntakeFormProps) {
   const [depth, setDepth] = useState([50])
   const [jurisdiction, setJurisdiction] = useState("")
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [validationError, setValidationError] = useState<string | null>(null)
+
+  const canSubmit = selectedFile !== null && jurisdiction !== ""
+
+  function handleSubmit() {
+    if (!selectedFile) {
+      setValidationError("Please upload a case document before initializing.")
+      return
+    }
+    if (!jurisdiction) {
+      setValidationError("Please select a jurisdiction before initializing.")
+      return
+    }
+    setValidationError(null)
+    onInitialize(selectedFile, jurisdiction)
+  }
+
+  const displayError = validationError ?? initError ?? null
 
   return (
     <div className="flex flex-1 items-start justify-center overflow-y-auto px-4 py-8 md:py-12">
@@ -82,7 +107,7 @@ export function IntakeForm({ onInitialize }: { onInitialize: () => void }) {
               Case Files & Evidence
               <span className="ml-1.5 text-xs font-normal text-muted-foreground">(PDF / TXT)</span>
             </Label>
-            <FileUploadZone />
+            <FileUploadZone onFileChange={setSelectedFile} />
           </div>
 
           {/* Jurisdiction Select */}
@@ -99,7 +124,9 @@ export function IntakeForm({ onInitialize }: { onInitialize: () => void }) {
                   <SelectGroup key={group.group}>
                     <SelectLabel className="text-gold-dim">{group.group}</SelectLabel>
                     {group.items.map((item) => (
-                      <SelectItem key={item.value} value={item.value}>
+                      // value={item.label} so the state holds the human-readable name
+                      // that gets sent directly to the backend API
+                      <SelectItem key={item.label} value={item.label}>
                         {item.label}
                       </SelectItem>
                     ))}
@@ -136,11 +163,20 @@ export function IntakeForm({ onInitialize }: { onInitialize: () => void }) {
           {/* Separator */}
           <div className="h-px bg-border/50" />
 
+          {/* Inline error — shown for validation failures or API errors */}
+          {displayError && (
+            <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5">
+              <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-destructive" />
+              <p className="text-xs text-destructive">{displayError}</p>
+            </div>
+          )}
+
           {/* Initialize Button */}
           <Button
             size="lg"
-            onClick={onInitialize}
-            className="group relative w-full overflow-hidden border border-gold/30 bg-gold/10 text-gold hover:bg-gold/20 hover:text-gold-glow animate-pulse-gold transition-all duration-300"
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            className="group relative w-full overflow-hidden border border-gold/30 bg-gold/10 text-gold hover:bg-gold/20 hover:text-gold-glow animate-pulse-gold transition-all duration-300 disabled:animate-none disabled:cursor-not-allowed disabled:opacity-40"
           >
             <span className="relative z-10 flex items-center gap-2 font-semibold tracking-wide">
               <Zap className="size-4 transition-transform group-hover:scale-110" />

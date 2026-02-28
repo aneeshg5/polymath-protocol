@@ -32,10 +32,9 @@ class PreProcessorOutput(BaseModel):
     personas: List[Persona] = Field(
         description="Dynamically generated 3 to 5 agents representing the main legal arguments.",
         min_length=3,
-        max_length=5,
+        max_length=10,
     )
 
 
-class SimulationInitResponse(BaseModel):
+class SimulationInitResponse(PreProcessorOutput):
     simulation_id: str
-    preprocessor_output: PreProcessorOutput

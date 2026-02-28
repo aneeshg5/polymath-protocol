@@ -2,8 +2,9 @@
 // useSimulation — Central simulation lifecycle hook
 // ============================================================================
 // This hook owns all simulation state and exposes it to the page and child
-// components. Every piece of mock data is loaded through clearly-marked
-// integration points so a backend engineer can swap in real API calls.
+// components. The /init call is now a real API fetch; all other state
+// (debate streaming, swarm metrics) still uses mock data pending the
+// WebSocket debate endpoint.
 // ============================================================================
 
 import { useState, useCallback, useEffect, useRef } from "react"
@@ -14,12 +15,15 @@ import type {
   SwarmMetrics,
   VerdictData,
   AgentKey,
+  ActivePersona,
 } from "@/lib/types"
 import {
   AGENT_DEBATE_STYLES,
   MOCK_DEBATE_SCRIPT,
   getMockVerdictData,
 } from "@/lib/mock-data"
+
+const INIT_API_URL = "http://localhost:8000/api/v1/simulation/init"
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -67,8 +71,14 @@ export interface UseSimulationReturn {
   /** Complete verdict payload — populated only in 'arbiter-verdict' state */
   verdictData: VerdictData | null
 
-  /** Transition: intake → loading (kicks off case file parsing) */
-  initializeSimulation: () => void
+  /** Personas returned by the /init API — empty until a simulation starts */
+  activeAgents: ActivePersona[]
+
+  /** Error message if /init failed; null when clean */
+  initError: string | null
+
+  /** Transition: intake → loading → war-room (real API call) */
+  initializeSimulation: (file: File, jurisdiction: string) => Promise<void>
 
   /** Transition: war-room → arbiter-verdict (terminates the debate) */
   terminateSimulation: () => void
@@ -97,31 +107,54 @@ export function useSimulation(): UseSimulationReturn {
   // ── Verdict data ────────────────────────────────────────────────────────
   const [verdictData, setVerdictData] = useState<VerdictData | null>(null)
 
+  // ── Active agents (from /init API) ──────────────────────────────────────
+  const [activeAgents, setActiveAgents] = useState<ActivePersona[]>([])
+
+  // ── Init error ──────────────────────────────────────────────────────────
+  const [initError, setInitError] = useState<string | null>(null)
+
+  // ── Simulation ID (stored for future WebSocket/terminate calls) ──────────
+  const simulationIdRef = useRef<string | null>(null)
+
   // ── Transition: intake → loading → war-room ─────────────────────────────
 
-  const initializeSimulation = useCallback(() => {
+  const initializeSimulation = useCallback(async (file: File, jurisdiction: string) => {
+    setInitError(null)
     setSimulationState("loading")
 
-    // TO-DO (BACKEND): Replace the 2-second timeout with an actual API call:
-    //   const res = await fetch("/api/v1/simulation/init", {
-    //     method: "POST",
-    //     body: formData,  // case files + jurisdiction + depth
-    //   })
-    //   const { simulationId, agents } = await res.json()
-    // On success, transition to "war-room" and open the WebSocket:
-    //   const ws = new WebSocket(`ws://<host>/api/v1/simulation/${simulationId}/debate`)
-    //   ws.onmessage = (event) => { ... append to debateTranscript ... }
+    try {
+      const formData = new FormData()
+      formData.append("file", file)
+      formData.append("jurisdiction", jurisdiction)
 
-    const timer = setTimeout(() => {
+      const res = await fetch(INIT_API_URL, {
+        method: "POST",
+        body: formData,
+        // Do NOT set Content-Type — fetch injects the multipart boundary automatically
+      })
+
+      if (!res.ok) {
+        const detail = await res.text()
+        throw new Error(`API ${res.status}: ${detail}`)
+      }
+
+      const data = await res.json()
+      simulationIdRef.current = data.simulation_id
+      setActiveAgents(data.personas ?? [])
+
       setSimulationState("war-room")
       setIsDebateStreaming(true)
       debateIndexRef.current = 0
-    }, 2000)
-
-    return () => clearTimeout(timer)
+    } catch (err) {
+      console.error("Simulation init failed:", err)
+      setInitError(
+        err instanceof Error ? err.message : "Simulation failed. Please try again."
+      )
+      setSimulationState("intake")
+    }
   }, [])
 
-  // ── Debate message streaming (mock timer → replace with WebSocket) ──────
+  // ── Debate message streaming (mock timer — replace with WebSocket) ───────
 
   useEffect(() => {
     if (simulationState !== "war-room" || !isDebateStreaming) return
@@ -135,16 +168,9 @@ export function useSimulation(): UseSimulationReturn {
       return
     }
 
-    // Show which agent is currently "typing"
+    // TO-DO (BACKEND): Replace with a WebSocket onmessage handler.
+    // Each frame: { "agent": "alpha", "content": "...", "turn": N, "timestamp": "..." }
     setCurrentTypingAgent(script[index].agent)
-
-    // TO-DO (BACKEND): In production this entire block is replaced by a
-    // WebSocket `onmessage` handler. Each incoming frame is a JSON object:
-    //   { "agent": "alpha", "content": "...", "turn": N, "timestamp": "..." }
-    // Append each frame:
-    //   setDebateTranscript(prev => [...prev, frameToMessage(frame)])
-    // The `isDebateStreaming` flag should be set to false when the server
-    // sends a frame with `"type": "debate_complete"`.
 
     const delay = 1800 + Math.random() * 2200
     const timer = setTimeout(() => {
@@ -156,16 +182,12 @@ export function useSimulation(): UseSimulationReturn {
     return () => clearTimeout(timer)
   }, [simulationState, isDebateStreaming, debateTranscript.length])
 
-  // ── Swarm metrics polling (mock → replace with SSE/WS) ─────────────────
+  // ── Swarm metrics polling (mock — replace with SSE/WS) ──────────────────
 
   useEffect(() => {
     if (simulationState !== "war-room") return
 
-    // TO-DO (BACKEND): Replace with an SSE stream or periodic fetch:
-    //   const evtSource = new EventSource(`/api/v1/simulation/${simId}/metrics`)
-    //   evtSource.onmessage = (e) => setSwarmMetrics(JSON.parse(e.data))
-    // Or poll: fetch(`/api/v1/simulation/${simId}/metrics`) every 2s
-
+    // TO-DO (BACKEND): Replace with SSE: new EventSource(`/api/v1/simulation/${simId}/metrics`)
     const interval = setInterval(() => {
       setSwarmMetrics((prev) => {
         const delta = (Math.random() - 0.35) * 3
@@ -182,13 +204,8 @@ export function useSimulation(): UseSimulationReturn {
   // ── Transition: war-room → arbiter-verdict ──────────────────────────────
 
   const terminateSimulation = useCallback(() => {
-    // TO-DO (BACKEND): Send a termination request and fetch the verdict:
-    //   await fetch(`/api/v1/simulation/${simId}/terminate`, { method: "POST" })
-    //   const verdict = await fetch(`/api/v1/simulation/${simId}/verdict`).then(r => r.json())
-    //   setVerdictData(verdict)
-    // The VerdictData interface matches the Pydantic model returned by the
-    // Arbiter LLM endpoint on the FastAPI server.
-
+    // TO-DO (BACKEND): POST /api/v1/simulation/${simulationIdRef.current}/terminate
+    // then GET /api/v1/simulation/${simulationIdRef.current}/verdict
     setVerdictData(getMockVerdictData())
     setSimulationState("arbiter-verdict")
     setIsDebateStreaming(false)
@@ -205,6 +222,9 @@ export function useSimulation(): UseSimulationReturn {
     debateIndexRef.current = 0
     setSwarmMetrics({ liveNodes: 100, convergence: 64, geoBiasActive: true })
     setVerdictData(null)
+    setActiveAgents([])
+    setInitError(null)
+    simulationIdRef.current = null
   }, [])
 
   return {
@@ -214,6 +234,8 @@ export function useSimulation(): UseSimulationReturn {
     currentTypingAgent,
     swarmMetrics,
     verdictData,
+    activeAgents,
+    initError,
     initializeSimulation,
     terminateSimulation,
     startNewCase,

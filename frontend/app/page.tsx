@@ -26,6 +26,7 @@ export default function Page() {
     initializeSimulation,
     terminateSimulation,
     startNewCase,
+    initError,
   } = useSimulation()
 
   return (
@@ -33,7 +34,7 @@ export default function Page() {
       <Navbar simulationState={simulationState} />
       <main className="flex flex-1 flex-col">
         {simulationState === "intake" && (
-          <IntakeForm onInitialize={initializeSimulation} />
+          <IntakeForm onInitialize={initializeSimulation} initError={initError} />
         )}
 
         {simulationState === "loading" && <LoadingState />}

@@ -14,6 +14,14 @@ export type SimulationState = "intake" | "loading" | "war-room" | "arbiter-verdi
 /** Identifier keys for the four agent archetypes */
 export type AgentKey = "alpha" | "beta" | "gamma" | "delta"
 
+/** A single agent persona as returned by the /api/v1/simulation/init endpoint */
+export interface ActivePersona {
+  id: string
+  label: string
+  archetype_name: string
+  system_prompt: string
+}
+
 /**
  * Defines a single AI agent archetype used across swarm, debate, and verdict.
  * The color is stored as a hex string because Recharts (used in verdict charts)

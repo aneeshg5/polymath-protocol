@@ -29,11 +29,13 @@ TAVILY_MAX_RESULTS = 5
 SYSTEM_PROMPT = """\
 You are a senior judicial analyst preparing a multi-agent adversarial legal simulation.
 
+The simulation jurisdiction is: {jurisdiction}
+
 Given a case document and jurisdictional research, produce:
   1. A dense 3-sentence summary of the core facts.
   2. The most relevant legal precedents surfaced by the web search.
-  3. Geographic and demographic biases specific to the jurisdiction that would influence
-     a jury in this type of case.
+  3. Geographic and demographic biases specific to {jurisdiction} — NOT the location named
+     in the case document — that would influence a jury in this type of case.
   4. Between 3 and 5 distinct judicial personas — one per major competing legal argument.
      Each persona must include a detailed system_prompt that instructs an LLM to argue
      exclusively from that legal stance.
@@ -164,7 +166,7 @@ async def initialize_simulation(
             model=INIT_MODEL,
             response_model=PreProcessorOutput,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": SYSTEM_PROMPT.format(jurisdiction=jurisdiction)},
                 {"role": "user", "content": context},
             ],
             max_tokens=4096,
@@ -176,7 +178,7 @@ async def initialize_simulation(
     # 7. Return with a freshly generated simulation ID
     return SimulationInitResponse(
         simulation_id=f"SIM-{uuid.uuid4().hex[:8].upper()}",
-        preprocessor_output=output,
+        **output.model_dump(),
     )
 
 

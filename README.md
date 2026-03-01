@@ -10,6 +10,19 @@ This is a monorepo containing three distinct environments. **Make sure you are i
 
 ---
 
+## 🛠️ Built With
+
+| Layer | Technology |
+|---|---|
+| **Frontend** | Next.js 16, React 19, TypeScript, Tailwind CSS v4, Framer Motion, Recharts |
+| **Backend** | Python, FastAPI, WebSockets, Pydantic v2, Uvicorn, Cursor / Copilot |
+| **LLM Inference** | Modal Labs (serverless A10G GPUs), vLLM, Llama 3 8B Instruct |
+| **AI / Orchestration** | OpenAI GPT-4o (Final Arbiter), GPT-4o-mini (Live Arbiter + preprocessing), OpenAI Structured Outputs, `instructor` |
+| **Search** | Tavily API (legal precedent retrieval) |
+| **PDF Parsing** | PyMuPDF (fitz) |
+
+---
+
 ## 🚀 How to Run the Environments
 
 ### 1. Frontend (Next.js)

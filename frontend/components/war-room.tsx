@@ -6,7 +6,7 @@
 
 import { SwarmArena } from "@/components/swarm-arena"
 import { DebateTelemetry } from "@/components/debate-telemetry"
-import type { DebateMessage, SwarmMetrics, ActivePersona } from "@/lib/types"
+import type { DebateMessage, SwarmMetrics, ActivePersona, LiveConsensusUpdate } from "@/lib/types"
 
 interface WarRoomProps {
   /** Debate messages rendered in the transcript */
@@ -21,6 +21,10 @@ interface WarRoomProps {
   swarmMetrics: SwarmMetrics
   /** Live personas — forwarded to SwarmArena for dynamic node layout */
   activeAgents: ActivePersona[]
+  /** Geographic bias objects from /init — forwarded to SwarmArena for dot distribution */
+  geographicBiases: Record<string, unknown>[]
+  /** Live Arbiter snapshot — forwarded to SwarmArena for proximity-based dot recruitment */
+  liveConsensus: LiveConsensusUpdate | null
   /** Current arbiter generation step label; null when idle */
   verdictStep: string | null
   /** Terminate button handler */
@@ -34,6 +38,8 @@ export function WarRoom({
   totalExchanges,
   swarmMetrics,
   activeAgents,
+  geographicBiases,
+  liveConsensus,
   verdictStep,
   onTerminate,
 }: WarRoomProps) {
@@ -44,7 +50,8 @@ export function WarRoom({
         <SwarmArena
           metrics={swarmMetrics}
           activeAgents={activeAgents}
-          currentTypingAgent={typingAgent}
+          geographicBiases={geographicBiases}
+          liveConsensus={liveConsensus}
         />
       </div>
 

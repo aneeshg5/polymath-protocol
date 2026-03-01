@@ -74,13 +74,14 @@ export interface AgentNode {
 /** A single swarm dot with drift/persuasion parameters */
 export interface SwarmDot {
   id: number
-  x: number            // current rendered position (mutated every frame)
+  x: number                    // current rendered position (mutated every frame)
   y: number
-  targetAgent: number  // index into agents array
+  targetAgent: number | null   // null = Undecided (orbits center); number = index into agents array
   speed: number
   offsetAngle: number
   radius: number
-  pull: number         // per-dot lerp speed (0 → MAX_PULL); reset to 0 on retarget
+  pull: number                 // per-dot lerp speed (0 → MAX_PULL); reset to 0 on retarget
+  stubbornness: number         // 0..1 — dots above 0.8 never change allegiance during the debate
 }
 
 /** Real-time metrics overlay for the swarm arena */
@@ -88,6 +89,14 @@ export interface SwarmMetrics {
   liveNodes: number
   convergence: number
   geoBiasActive: boolean
+}
+
+/** Live Arbiter snapshot — emitted by the backend after every debate turn */
+export interface LiveConsensusUpdate {
+  /** Keys are agent IDs or "Undecided", values are integer percentages summing to 100 */
+  distribution: Record<string, number>
+  /** The agent whose turn was just evaluated */
+  speakerId: string
 }
 
 // ── Arbiter Verdict ─────────────────────────────────────────────────────────
@@ -133,8 +142,12 @@ export interface VerdictData {
   jurisdiction: string
   depthLabel: string
   timestamp: string
+  /** Arbiter's independent analytical consensus calculation */
   consensus: ConsensusEntry[]
   barData: BarEntry[]
+  /** Exact dot distribution the swarm was showing at simulation termination */
+  swarmConsensus: ConsensusEntry[] | null
+  swarmBarData: BarEntry[] | null
   advantages: AdvantageEntry[]
   flaws: FlawEntry[]
   summaryText: string

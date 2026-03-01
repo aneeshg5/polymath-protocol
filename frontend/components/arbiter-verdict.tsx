@@ -136,81 +136,91 @@ export function ArbiterVerdict({ data, onNewCase, activeAgents }: ArbiterVerdict
       <div className="mx-auto w-full max-w-7xl flex-1 px-6 py-6">
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
 
-          {/* ── Doughnut Chart ── */}
+          {/* ── Doughnut Chart — Final Swarm State ── */}
+          {/* Shows the exact dot distribution the swarm was displaying at the   */}
+          {/* moment "Terminate Simulation" was clicked.                          */}
           <motion.div variants={itemVariants} className="lg:col-span-5">
             <Card className="h-full border-border/60 bg-card">
               <CardHeader className="pb-3">
                 <div className="flex items-center gap-2">
                   <Users className="size-4 text-gold" />
                   <CardTitle className="text-sm font-semibold text-foreground">
-                    Final Swarm Consensus
+                    Final Jury Swarm State
                   </CardTitle>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Distribution of {data.consensus.reduce((a, c) => a + c.value, 0)} demographic jury nodes at simulation termination
+                  Exact dot distribution of 100 jury nodes at simulation termination
                 </p>
               </CardHeader>
               <CardContent>
-                <ChartContainer
-                  config={{ value: { label: "Nodes" } }}
-                  className="mx-auto aspect-square h-[220px]"
-                >
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <ChartTooltip content={<ChartTooltipContent />} />
-                      <Pie
-                        data={data.consensus}
-                        dataKey="value"
-                        nameKey="name"
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={55}
-                        outerRadius={90}
-                        strokeWidth={2}
-                        stroke="oklch(0.14 0.005 260)"
+                {(() => {
+                  const swarmData = data.swarmConsensus ?? data.consensus
+                  return (
+                    <>
+                      <ChartContainer
+                        config={{ value: { label: "Nodes" } }}
+                        className="mx-auto aspect-square h-[220px]"
                       >
-                        {data.consensus.map((entry, i) => (
-                          <Cell key={`cell-${i}`} fill={entry.color} />
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <ChartTooltip content={<ChartTooltipContent />} />
+                            <Pie
+                              data={swarmData}
+                              dataKey="value"
+                              nameKey="name"
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={55}
+                              outerRadius={90}
+                              strokeWidth={2}
+                              stroke="oklch(0.14 0.005 260)"
+                            >
+                              {swarmData.map((entry, i) => (
+                                <Cell key={`cell-${i}`} fill={entry.color} />
+                              ))}
+                            </Pie>
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </ChartContainer>
+                      <div className="mt-3 flex flex-col gap-1.5">
+                        {swarmData.map((entry) => (
+                          <div key={entry.name} className="flex items-center justify-between text-xs">
+                            <span className="flex items-center gap-2">
+                              <span className="size-2 rounded-full" style={{ backgroundColor: entry.color }} />
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="cursor-help text-muted-foreground hover:text-foreground transition-colors">{entry.name}</span>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  <p className="font-medium">{getArchetype(entry.name)}</p>
+                                </TooltipContent>
+                              </Tooltip>
+                            </span>
+                            <span className="font-mono text-foreground">{entry.value}%</span>
+                          </div>
                         ))}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                </ChartContainer>
-                {/* Legend */}
-                <div className="mt-3 flex flex-col gap-1.5">
-                  {data.consensus.map((entry) => (
-                    <div key={entry.name} className="flex items-center justify-between text-xs">
-                      <span className="flex items-center gap-2">
-                        <span className="size-2 rounded-full" style={{ backgroundColor: entry.color }} />
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="cursor-help text-muted-foreground hover:text-foreground transition-colors">{entry.name}</span>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <p className="font-medium">{getArchetype(entry.name)}</p>
-                          </TooltipContent>
-                        </Tooltip>
-                      </span>
-                      <span className="font-mono text-foreground">{entry.value}%</span>
-                    </div>
-                  ))}
-                </div>
+                      </div>
+                    </>
+                  )
+                })()}
               </CardContent>
             </Card>
           </motion.div>
 
-          {/* ── Horizontal Bar Chart ── */}
+          {/* ── Horizontal Bar Chart — Arbiter's Analytical Assessment ── */}
+          {/* Shows the Arbiter's independently derived legal consensus,      */}
+          {/* which may differ from the raw swarm state above.               */}
           <motion.div variants={itemVariants} className="lg:col-span-7">
             <Card className="h-full border-border/60 bg-card">
               <CardHeader className="pb-3">
                 <div className="flex items-center gap-2">
                   <TrendingUp className="size-4 text-gold" />
                   <CardTitle className="text-sm font-semibold text-foreground">
-                    Node Distribution by Archetype
+                    Arbiter's Analytical Assessment
                   </CardTitle>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Horizontal bar breakdown of final jury swarm allocation
+                  Independent legal analysis by the Arbiter Agent — may differ from swarm state
                 </p>
               </CardHeader>
               <CardContent>

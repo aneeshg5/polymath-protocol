@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState, useMemo, type FC } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Activity, Globe, Target } from "lucide-react"
-import type { AgentNode, SwarmDot, SwarmMetrics, ActivePersona } from "@/lib/types"
+import type { AgentNode, SwarmDot, SwarmMetrics, ActivePersona, LiveConsensusUpdate } from "@/lib/types"
 
 // ── Color palette & node builder ─────────────────────────────────────────────
 // Colors cycle through the same palette used by the debate transcript so the
@@ -47,21 +47,49 @@ function personasToAgentNodes(personas: ActivePersona[]): AgentNode[] {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 // Per-dot physics constants
-const LERP_ACCEL  = 0.003  // pull speed builds by this much per frame
-const MAX_PULL    = 0.055  // maximum lerp fraction per frame (~60 frames to 95%)
-const RETARGET_P  = 0.02   // probability per frame that a dot switches to the speaker
+const LERP_ACCEL  = 0.0012  // slower build — dots feel heavy, not snappy
+const MAX_PULL    = 0.030   // looser max speed → wider, cloud-like orbits
 
-function createSwarmDots(count: number, agentCount: number): SwarmDot[] {
-  return Array.from({ length: count }, (_, i) => ({
-    id: i,
-    x: 0.15 + Math.random() * 0.7,
-    y: 0.15 + Math.random() * 0.7,
-    targetAgent: Math.floor(Math.random() * Math.max(1, agentCount)),
-    speed: 0.3 + Math.random() * 0.7,
-    offsetAngle: Math.random() * Math.PI * 2,
-    radius: 0.02 + Math.random() * 0.08,
-    pull: 0,
-  }))
+/**
+ * Spawn the swarm in a fully Undecided state (every dot targets the center).
+ *
+ * All dots start at `targetAgent: null` and orbit `(0.5, 0.5)` until the first
+ * agent begins speaking, at which point they gradually break away one by one.
+ *
+ * Geographic bias is encoded purely through stubbornness — once a dot commits
+ * to an agent it is hard (or impossible for the top ~20-36%) to pull it away.
+ * A high-opinion jurisdiction (e.g. Texas, |bias_weight| ≈ 0.8) produces more
+ * locked-in dots than a low-opinion mixed panel, so the final distribution resists
+ * redistribution even as new speakers take the floor.
+ *
+ * lean          − reserved for future directional bias (which side dots prefer
+ *                 when first breaking away from center). Currently unused.
+ * opinionStrength − mean absolute bias_weight (0..1); raises the stubbornness floor.
+ */
+function createSwarmDots(
+  count: number,
+  _agentCount: number,
+  _lean: number = 0,
+  opinionStrength: number = 0,
+): SwarmDot[] {
+  return Array.from({ length: count }, (_, i) => {
+    // sqrt-transform when opinionStrength≈1 raises P(stubborn > 0.8) from ~20% → ~36%.
+    const rawStub = Math.random()
+    const stubbornness = Math.pow(rawStub, 1 - opinionStrength * 0.5)
+
+    return {
+      id: i,
+      // Spawn near center so the initial pool looks intentionally gathered
+      x: 0.4 + Math.random() * 0.2,
+      y: 0.4 + Math.random() * 0.2,
+      targetAgent: null,   // Undecided until first speaker
+      speed: 0.3 + Math.random() * 0.7,
+      offsetAngle: Math.random() * Math.PI * 2,
+      radius: 0.05 + Math.random() * 0.14,
+      pull: 0,
+      stubbornness,
+    }
+  })
 }
 
 // ── SwarmForceGraph (isolated, swappable) ───────────────────────────────────
@@ -78,10 +106,14 @@ interface SwarmForceGraphProps {
   /** Pixel dimensions of the rendering area (set by parent ResizeObserver) */
   width: number
   height: number
-  /** ID of the agent currently speaking; null when no one is speaking */
-  currentTypingAgent: string | null
+  /** Live Arbiter snapshot — drives proximity-based dot recruitment after each turn */
+  liveConsensus: LiveConsensusUpdate | null
   /** Called when the pointer enters or leaves an agent node */
   onAgentHover: (idx: number | null, pixelX: number, pixelY: number) => void
+  /** Aggregate lean of the jurisdiction's bias_weights (-1..+1); seeds initial dot distribution */
+  lean: number
+  /** Mean absolute bias_weight (0..1); high values increase dot stubbornness */
+  opinionStrength: number
 }
 
 export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
@@ -89,33 +121,61 @@ export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
   dotCount,
   width,
   height,
-  currentTypingAgent,
+  liveConsensus,
   onAgentHover,
+  lean,
+  opinionStrength,
 }) => {
-  const dotsRef = useRef<SwarmDot[]>(createSwarmDots(dotCount, agents.length))
+  const dotsRef = useRef<SwarmDot[]>(createSwarmDots(dotCount, agents.length, lean, opinionStrength))
   const [dotPositions, setDotPositions] = useState<
-    { x: number; y: number; targetAgent: number }[]
+    { x: number; y: number; targetAgent: number | null }[]
   >([])
   const animationRef = useRef<number>(0)
   const timeRef = useRef(0)
-  // Ref so the animation closure always reads the current speaking agent index
-  // without needing to restart the rAF loop when the prop changes.
-  const speakingAgentRef = useRef<number | null>(null)
 
-  // Keep speakingAgentRef in sync with the currentTypingAgent prop.
+  // When the live Arbiter pushes a new snapshot, recruit exactly the right
+  // number of dots to the current speaker — picking the dots that are
+  // physically closest to the speaker's node so migration looks immediate
+  // and physically motivated rather than random.
   useEffect(() => {
-    if (!currentTypingAgent) {
-      speakingAgentRef.current = null
-      return
+    if (!liveConsensus) return
+    const { distribution, speakerId } = liveConsensus
+    const dots = dotsRef.current
+
+    const speakerIdx = agents.findIndex((a) => a.id === speakerId)
+    if (speakerIdx === -1) return
+
+    const speakerNode = agents[speakerIdx]
+    const newSpeakerCount = distribution[speakerId] ?? 0
+
+    // Count how many dots are currently already committed to the speaker.
+    const currentSpeakerCount = dots.filter((d) => d.targetAgent === speakerIdx).length
+    const toRecruit = newSpeakerCount - currentSpeakerCount
+
+    if (toRecruit <= 0) return
+
+    // Pool of available dots: everything NOT already heading to the speaker.
+    // Sort ascending by squared Euclidean distance to the speaker's node —
+    // the closest dots are the most "persuadable" and move first.
+    const available = dots
+      .filter((d) => d.targetAgent !== speakerIdx)
+      .sort((a, b) => {
+        const da = (a.x - speakerNode.x) ** 2 + (a.y - speakerNode.y) ** 2
+        const db = (b.x - speakerNode.x) ** 2 + (b.y - speakerNode.y) ** 2
+        return da - db
+      })
+
+    for (let i = 0; i < Math.min(toRecruit, available.length); i++) {
+      available[i].targetAgent = speakerIdx
+      available[i].pull = 0
     }
-    const idx = agents.findIndex((a) => a.id === currentTypingAgent)
-    speakingAgentRef.current = idx >= 0 ? idx : null
-  }, [currentTypingAgent, agents])
+  }, [liveConsensus, agents])
 
-  // Regenerate dots when count or agent roster changes
+  // Regenerate dots when count or agent roster changes.
+  // lean/opinionStrength are stable after /init so including them is safe.
   useEffect(() => {
-    dotsRef.current = createSwarmDots(dotCount, agents.length)
-  }, [dotCount, agents.length])
+    dotsRef.current = createSwarmDots(dotCount, agents.length, lean, opinionStrength)
+  }, [dotCount, agents.length, lean, opinionStrength])
 
   // Animation loop — dots maintain their own position (dot.x/y updated in place).
   // When a dot retargets, its pull resets to 0 so it accelerates smoothly from rest.
@@ -127,34 +187,33 @@ export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
       if (!running) return
       timeRef.current += 0.008
       const t = timeRef.current
-      const speakingIdx = speakingAgentRef.current
 
       const positions = dots.map((dot) => {
-        // Gravitational pull: each dot has a small per-frame chance to abandon its
-        // current target and drift toward whoever is currently speaking.
-        if (
-          speakingIdx !== null &&
-          speakingIdx !== dot.targetAgent &&
-          Math.random() < RETARGET_P
-        ) {
-          dot.targetAgent = speakingIdx
-          dot.pull = 0  // restart acceleration so the curve is smooth
+        if (dot.targetAgent === null) {
+          // ── UNDECIDED: tight central cluster, slow drift ──────────────────
+          // Small radius + low speed multipliers keep this group compact and
+          // countable — like jurors sitting still, waiting to be convinced.
+          const undecidedRadius = 0.03 + dot.radius * 0.15
+          const wobble = Math.sin(t * dot.speed * 0.5 + dot.offsetAngle) * undecidedRadius
+          const drift  = Math.cos(t * dot.speed * 0.4 + dot.offsetAngle * 0.7) * undecidedRadius
+          const targetX = 0.5 + wobble
+          const targetY = 0.5 + drift
+          dot.pull = Math.min(dot.pull + LERP_ACCEL, MAX_PULL)
+          dot.x += (targetX - dot.x) * dot.pull
+          dot.y += (targetY - dot.y) * dot.pull
+          return { x: dot.x, y: dot.y, targetAgent: null }
         }
 
+        // ── COMMITTED: orbit an agent node ───────────────────────────────
         const agent = agents[dot.targetAgent]
         if (!agent) return { x: dot.x, y: dot.y, targetAgent: dot.targetAgent }
 
-        // Orbital wobble around the target anchor
         const wobble = Math.sin(t * dot.speed * 2 + dot.offsetAngle) * dot.radius
         const drift  = Math.cos(t * dot.speed * 1.5 + dot.offsetAngle * 0.7) * dot.radius
-
         const targetX = agent.x + wobble
         const targetY = agent.y + drift
 
-        // Accumulate lerp speed from 0 → MAX_PULL (slow-start, smooth deceleration)
         dot.pull = Math.min(dot.pull + LERP_ACCEL, MAX_PULL)
-
-        // Update dot's actual position — exponential ease toward the target orbit
         dot.x += (targetX - dot.x) * dot.pull
         dot.y += (targetY - dot.y) * dot.pull
 
@@ -211,15 +270,15 @@ export const SwarmForceGraph: FC<SwarmForceGraphProps> = ({
         />
       ))}
 
-      {/* Swarm dots */}
+      {/* Swarm dots — undecided dots render as muted grey; committed dots adopt their agent's colour */}
       {dotPositions.map((dot, i) => (
         <circle
           key={`dot-${i}`}
           cx={dot.x * width}
           cy={dot.y * height}
           r={2}
-          fill={agents[dot.targetAgent].color}
-          opacity={0.5}
+          fill={dot.targetAgent !== null ? (agents[dot.targetAgent]?.color ?? "#6b7280") : "#6b7280"}
+          opacity={dot.targetAgent !== null ? 0.5 : 0.22}
         />
       ))}
 
@@ -259,8 +318,10 @@ interface SwarmArenaProps {
   metrics: SwarmMetrics
   /** Live personas from the backend — used to build dynamic agent nodes */
   activeAgents: ActivePersona[]
-  /** ID of the agent currently speaking; drives dot gravitational pull */
-  currentTypingAgent: string | null
+  /** Geographic bias objects from /init — used to seed the swarm's initial distribution */
+  geographicBiases: Record<string, unknown>[]
+  /** Live Arbiter snapshot — forwarded to SwarmForceGraph for proximity-based dot recruitment */
+  liveConsensus: LiveConsensusUpdate | null
 }
 
 // Extract the first sentence from a system prompt for the tooltip summary.
@@ -271,12 +332,28 @@ function firstSentence(text: string): string {
 
 const TOOLTIP_W = 224 // px — used for smart left/right placement
 
-export function SwarmArena({ metrics, activeAgents, currentTypingAgent }: SwarmArenaProps) {
+export function SwarmArena({ metrics, activeAgents, geographicBiases, liveConsensus }: SwarmArenaProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 500 })
 
   // Recompute node positions whenever the persona list changes
   const agentNodes = useMemo(() => personasToAgentNodes(activeAgents), [activeAgents])
+
+  // Distil the geographic biases into two scalar physics seeds so SwarmForceGraph
+  // can initialise dots with jurisdiction-aware distribution and stubbornness.
+  const { lean, opinionStrength } = useMemo(() => {
+    if (!geographicBiases.length) return { lean: 0, opinionStrength: 0 }
+    const weights = geographicBiases.map((b) =>
+      typeof b.bias_weight === "number" ? (b.bias_weight as number) : 0
+    )
+    const meanLean = weights.reduce((s, w) => s + w, 0) / weights.length
+    const meanStrength = weights.reduce((s, w) => s + Math.abs(w), 0) / weights.length
+    // Clamp to valid range in case of unexpected API values
+    return {
+      lean: Math.max(-1, Math.min(1, meanLean)),
+      opinionStrength: Math.max(0, Math.min(1, meanStrength)),
+    }
+  }, [geographicBiases])
 
   // Hover state: index into activeAgents/agentNodes + pixel anchor in container coords
   const [hovered, setHovered] = useState<{ idx: number; x: number; y: number } | null>(null)
@@ -338,8 +415,10 @@ export function SwarmArena({ metrics, activeAgents, currentTypingAgent }: SwarmA
         dotCount={metrics.liveNodes}
         width={dimensions.width}
         height={dimensions.height}
-        currentTypingAgent={currentTypingAgent}
+        liveConsensus={liveConsensus}
         onAgentHover={handleAgentHover}
+        lean={lean}
+        opinionStrength={opinionStrength}
       />
 
       {/* Agent hover tooltip */}

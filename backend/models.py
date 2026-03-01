@@ -60,6 +60,19 @@ class ResearchPhaseResponse(BaseModel):
     briefings: List[BriefingDocument]
 
 
+# ── Live Consensus ────────────────────────────────────────────────────────────
+
+class LiveConsensus(BaseModel):
+    """Real-time jury alignment snapshot emitted by the Arbiter after each debate turn."""
+    turn_number: int
+    distribution: dict[str, int] = Field(
+        description=(
+            "Keys are agent IDs (or 'Undecided'), values are integer percentages. "
+            "All values must sum to exactly 100."
+        )
+    )
+
+
 # ── Verdict Phase ─────────────────────────────────────────────────────────────
 
 class TranscriptTurn(BaseModel):

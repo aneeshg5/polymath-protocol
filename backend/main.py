@@ -23,6 +23,7 @@ from models import (
     ResearchPhaseRequest,
     ResearchPhaseResponse,
     BriefingDocument,
+    LiveConsensus,
     VerdictRequest,
     VerdictData,
 )
@@ -62,6 +63,48 @@ CASE_SUMMARY_SYSTEM_PROMPT = (
     "a highly concise, 5-to-10 word summary of the core legal issue and the involved "
     "parties. Return ONLY the summary, no other text."
 )
+
+# Hard limit on how many nodes can migrate to the current speaker per turn.
+# Without this, rounds 2-3 can produce explosive swings as the LLM becomes
+# more confident and tries to redistribute 30-50 nodes at once.
+MAX_NODES_PER_TURN = 18
+
+LIVE_ARBITER_SYSTEM_PROMPT = """\
+You are the Impartial Arbiter evaluating a live legal debate in real time.
+You will be given the CURRENT SPEAKER, the current jury distribution, and the full \
+debate history up to this point.
+
+Your task: decide how many jury nodes are persuaded by the current speaker's argument \
+and move to their group.
+
+STRICT ONE-WAY MOVEMENT RULE:
+- Jury nodes may ONLY move toward the current speaker. No node may switch from one \
+non-speaking agent to another, and no node may move back to Undecided.
+- For every agent that is NOT the current speaker: their count may only DECREASE or \
+stay the same (as nodes are pulled away to the speaker). They cannot gain nodes.
+- The current speaker's count may only INCREASE or stay the same.
+- The sum of ALL values must equal EXACTLY 100.
+
+Think of the jury as listening to one attorney at a time. Persuaded jurors walk to \
+that attorney's side. Unpersuaded jurors stay exactly where they are.
+
+Calibration guide (per turn):
+- Weak or repetitive argument: 0-5 nodes move
+- Solid argument with good precedent: 5-12 nodes move
+- Very strong, novel argument: 12-20 nodes move
+- Extraordinary argument with no prior rebuttal: up to 25 nodes move
+
+Respond with ONLY a valid JSON object in exactly this format:
+{
+  "distribution": {
+    "<agent_id>": <integer_percentage>,
+    "Undecided": <integer_percentage>
+  }
+}
+
+Include every agent from the roster plus "Undecided". All values must be \
+non-negative integers summing to exactly 100.\
+"""
 
 ARBITER_MODEL = "gpt-4o"
 
@@ -294,19 +337,51 @@ async def generate_verdict(
         for b in request.geographic_biases
     ) or "No jurisdictional bias data provided."
 
+    # 3. Build an ordered roster of every agent that spoke, preserving first-appearance
+    #    order. This is injected into the system prompt so the LLM cannot silently omit
+    #    an agent from the consensus array.
+    seen_agents: dict[str, str] = {}  # agent_id → label, insertion-ordered
+    for turn in request.debate_transcript:
+        if turn.agent_id not in seen_agents:
+            seen_agents[turn.agent_id] = turn.label
+
+    # Compute the actual number of debate rounds completed.
+    # Total turns ÷ unique agents = rounds (integer division handles any partial
+    # last round if the simulation was terminated early).
+    agent_count = len(seen_agents)
+    actual_rounds = (
+        len(request.debate_transcript) // agent_count if agent_count > 0 else 0
+    )
+
+    roster_lines = "\n".join(
+        f"  - {label} (agent_id: \"{agent_id}\")"
+        for agent_id, label in seen_agents.items()
+    )
+    # Append a hard enforcement block to the static prompt so the constraint
+    # carries the authority of a system instruction, not just a user request.
+    consensus_constraint = (
+        f"\n\nCRITICAL — CONSENSUS ARRAY COMPLETENESS REQUIREMENT:\n"
+        f"This debate had exactly {agent_count} agents:\n{roster_lines}\n"
+        f"Your `consensus` JSON array MUST contain one entry for EVERY agent listed "
+        f"above, PLUS one entry for agent_id \"Undecided\".\n"
+        f"You may assign 0% to any agent, but you CANNOT omit them.\n"
+        f"The sum of ALL percentage values across every entry must equal EXACTLY 100."
+    )
+    system_prompt = ARBITER_SYSTEM_PROMPT + consensus_constraint
+
     user_content = (
         f"JURISDICTION: {request.jurisdiction}\n\n"
         f"GEOGRAPHIC & DEMOGRAPHIC BIASES:\n{biases_text}\n\n"
         f"DEBATE TRANSCRIPT:\n{transcript_text}\n\n"
         f"SIMULATION ID: {sim_id}\n"
-        f"DEBATE ROUNDS COMPLETED: {len(set(t.agent_id for t in request.debate_transcript))}"
+        f"DEBATE ROUNDS COMPLETED: {actual_rounds}"
     )
 
     try:
         response = await openai_client.beta.chat.completions.parse(
             model=ARBITER_MODEL,
             messages=[
-                {"role": "system", "content": ARBITER_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_content},
             ],
             response_format=VerdictData,
@@ -319,13 +394,14 @@ async def generate_verdict(
     if verdict is None:
         raise HTTPException(status_code=502, detail="Arbiter returned an empty response.")
 
-    # Override fields that the LLM should not generate freely — these are
-    # ground-truth values sourced from the simulation, not LLM inferences.
-    return verdict.model_copy(update={
+    # Override ground-truth fields that the LLM should not infer freely.
+    verdict_final = verdict.model_copy(update={
         "simulation_id": sim_id,
         "jurisdiction": request.jurisdiction,
-        "deliberation_rounds": len(set(t.agent_id for t in request.debate_transcript)),
+        "deliberation_rounds": actual_rounds,
     })
+
+    return verdict_final.model_dump()
 
 
 # ── GET / (health check) ─────────────────────────────────────────────────────
@@ -366,6 +442,7 @@ async def debate_websocket(websocket: WebSocket):
             b["agent_id"]: b["briefing_doc"]
             for b in payload["briefings"]
         }
+        geographic_biases: list[dict] = payload.get("geographic_biases", [])
 
         await websocket.send_json(
             {"type": "status", "message": "Connecting to Modal inference fleet..."}
@@ -383,6 +460,13 @@ async def debate_websocket(websocket: WebSocket):
 
         # ── 3. Debate loop ────────────────────────────────────────────────────
         debate_history: list[dict] = []
+
+        # Server-side jury distribution.  Starts fully Undecided and is updated
+        # after every live Arbiter evaluation.  Keeping it here (not on the
+        # client) lets the live Arbiter always receive the true prior state even
+        # if a previous evaluation failed and no frame was sent.
+        current_distribution: dict[str, int] = {p["id"]: 0 for p in personas}
+        current_distribution["Undecided"] = 100
 
         for round_num in range(1, DEBATE_ROUNDS + 1):
             await websocket.send_json(
@@ -423,6 +507,101 @@ async def debate_websocket(websocket: WebSocket):
                     "label": persona.get("label", agent_id),
                     "content": full_response.strip(),
                 })
+
+                # ── Live Arbiter evaluation ───────────────────────────────────
+                # Ask gpt-4o-mini how many nodes the current speaker convinced.
+                # Failures are non-fatal: log and keep current_distribution as-is.
+                try:
+                    agent_roster = ", ".join(
+                        f"{p['id']} ({p.get('label', p['id'])})"
+                        for p in personas
+                    )
+                    history_text = "\n\n".join(
+                        f"[{t['label']}]: {t['content']}"
+                        for t in debate_history
+                    )
+                    biases_text = "\n".join(
+                        f"- {b.get('demographic_trait', 'Unknown')}: "
+                        f"bias_weight={b.get('bias_weight', 0):.2f} — "
+                        f"{b.get('description', '')}"
+                        for b in geographic_biases
+                    ) or "No bias data provided."
+
+                    live_user_content = (
+                        f"CURRENT SPEAKER: {agent_id} ({persona.get('label', agent_id)})\n\n"
+                        f"AGENT ROSTER (use these exact IDs as keys): {agent_roster}\n\n"
+                        f"CURRENT JURY DISTRIBUTION (before this turn):\n"
+                        f"{json.dumps(current_distribution)}\n\n"
+                        f"GEOGRAPHIC BIASES:\n{biases_text}\n\n"
+                        f"DEBATE TRANSCRIPT SO FAR:\n{history_text}\n\n"
+                        f"How many of the {current_distribution.get('Undecided', 0)} Undecided "
+                        f"nodes and any nodes from other agents are persuaded by "
+                        f"{persona.get('label', agent_id)}'s argument above? "
+                        "Remember: only nodes moving TO the current speaker are allowed."
+                    )
+
+                    live_resp = await openai_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": LIVE_ARBITER_SYSTEM_PROMPT},
+                            {"role": "user", "content": live_user_content},
+                        ],
+                        response_format={"type": "json_object"},
+                        temperature=0.1,
+                        max_tokens=250,
+                    )
+                    raw_dist: dict[str, int] = {
+                        k: int(v)
+                        for k, v in json.loads(
+                            live_resp.choices[0].message.content
+                        ).get("distribution", {}).items()
+                    }
+
+                    # ── Enforce one-directional constraint ───────────────────
+                    # Non-speakers can only lose nodes; speaker gets the rest.
+                    enforced: dict[str, int] = {}
+                    non_speaker_total = 0
+                    for key in current_distribution:
+                        if key == agent_id:
+                            continue
+                        enforced[key] = min(
+                            raw_dist.get(key, current_distribution[key]),
+                            current_distribution[key],
+                        )
+                        non_speaker_total += enforced[key]
+
+                    uncapped_speaker = 100 - non_speaker_total
+                    prev_speaker_count = current_distribution.get(agent_id, 0)
+
+                    # ── Per-turn cap ──────────────────────────────────────────
+                    # Prevent explosive 30-50 node swings in rounds 2-3 by
+                    # capping how many nodes can arrive in a single turn.
+                    # Leftover freed nodes return to Undecided — those jurors
+                    # weren't fully convinced this round and remain persuadable.
+                    capped_speaker = min(uncapped_speaker, prev_speaker_count + MAX_NODES_PER_TURN)
+                    leftover = uncapped_speaker - capped_speaker
+
+                    enforced[agent_id] = capped_speaker
+                    if leftover > 0:
+                        enforced["Undecided"] = enforced.get("Undecided", 0) + leftover
+
+                    # Update server-side tracker for the next turn.
+                    current_distribution = enforced
+
+                    live_consensus = LiveConsensus(
+                        turn_number=len(debate_history),
+                        distribution=enforced,
+                    )
+                    await websocket.send_json({
+                        "type": "live_consensus",
+                        "data": {
+                            "turn_number": live_consensus.turn_number,
+                            "distribution": live_consensus.distribution,
+                            "speaker_id": agent_id,
+                        },
+                    })
+                except Exception as live_exc:
+                    print(f"Live Arbiter evaluation failed (non-fatal): {live_exc}")
 
                 await websocket.send_json({"type": "turn_end", "agent_id": agent_id})
 

@@ -15,6 +15,7 @@ import type {
   VerdictData,
   AgentKey,
   ActivePersona,
+  LiveConsensusUpdate,
 } from "@/lib/types"
 import { AGENT_DEBATE_STYLES } from "@/lib/mock-data"
 
@@ -70,6 +71,12 @@ export interface UseSimulationReturn {
   /** ID of the agent currently "typing", if any */
   currentTypingAgent: string | null
 
+  /** True only while text chunks are actively arriving for the current turn */
+  isAgentSpeaking: boolean
+
+  /** Live Arbiter evaluation — updated after every debate turn; null before the first evaluation */
+  liveConsensus: LiveConsensusUpdate | null
+
   /** Real-time swarm metrics for the arena overlay */
   swarmMetrics: SwarmMetrics
 
@@ -78,6 +85,9 @@ export interface UseSimulationReturn {
 
   /** Personas returned by the /init API — empty until a simulation starts */
   activeAgents: ActivePersona[]
+
+  /** Geographic bias objects from the /init API — used to seed swarm initial distribution */
+  geographicBiases: Record<string, unknown>[]
 
   /** Error message from a failed Phase 1 fetch or WebSocket; null when clean */
   initError: string | null
@@ -107,6 +117,11 @@ export function useSimulation(): UseSimulationReturn {
   const [debateTranscript, setDebateTranscript] = useState<DebateMessage[]>([])
   const [isDebateStreaming, setIsDebateStreaming] = useState(false)
   const [currentTypingAgent, setCurrentTypingAgent] = useState<string | null>(null)
+  const [isAgentSpeaking, setIsAgentSpeaking] = useState(false)
+  const [liveConsensus, setLiveConsensus] = useState<LiveConsensusUpdate | null>(null)
+  // Ref mirror so terminateSimulation (useCallback with [] deps) always reads
+  // the most recent live distribution without a stale closure.
+  const liveConsensusRef = useRef<LiveConsensusUpdate | null>(null)
 
   // ── Swarm metrics ───────────────────────────────────────────────────────
   const [swarmMetrics, setSwarmMetrics] = useState<SwarmMetrics>({
@@ -121,6 +136,9 @@ export function useSimulation(): UseSimulationReturn {
   // ── Active agents ────────────────────────────────────────────────────────
   const [activeAgents, setActiveAgents] = useState<ActivePersona[]>([])
 
+  // ── Geographic biases (state copy for rendering; ref copy for async verdict call)
+  const [geographicBiases, setGeographicBiases] = useState<Record<string, unknown>[]>([])
+
   // ── Init error ──────────────────────────────────────────────────────────
   const [initError, setInitError] = useState<string | null>(null)
 
@@ -129,12 +147,14 @@ export function useSimulation(): UseSimulationReturn {
   const [verdictStep, setVerdictStep] = useState<string | null>(null)
 
   // ── Stable refs ──────────────────────────────────────────────────────────
-  // wsRef:               lets cleanup/terminate close the socket from outside the closure
-  // activeAgentsRef:     gives onmessage always-fresh persona list without stale closures
-  // jurisdictionRef:     stored so terminateSimulation can send it to the verdict API
-  // geographicBiasesRef: stored so the Arbiter can weight the jury swarm correctly
-  // transcriptTurnsRef:  accumulates completed turns in backend shape {agent_id, label, content}
+  // wsRef:                 lets cleanup/terminate close the socket from outside the closure
+  // activeAgentsRef:       gives onmessage always-fresh persona list without stale closures
+  // jurisdictionRef:       stored so terminateSimulation can send it to the verdict API
+  // geographicBiasesRef:   stored so the Arbiter can weight the jury swarm correctly
+  // transcriptTurnsRef:    accumulates completed turns in backend shape {agent_id, label, content}
   // currentTurnContentRef: running concatenation of chunks for the turn currently in flight
+  // currentTypingAgentIdRef: mirrors currentTypingAgent state for stale-closure-safe reads
+  //                          in terminateSimulation (needed to flush a partial last turn)
   const simulationIdRef = useRef<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const activeAgentsRef = useRef<ActivePersona[]>([])
@@ -142,6 +162,7 @@ export function useSimulation(): UseSimulationReturn {
   const geographicBiasesRef = useRef<Record<string, unknown>[]>([])
   const transcriptTurnsRef = useRef<{ agent_id: string; label: string; content: string }[]>([])
   const currentTurnContentRef = useRef<string>("")
+  const currentTypingAgentIdRef = useRef<string | null>(null)
 
   // ── Transition: intake → loading → war-room ─────────────────────────────
 
@@ -175,7 +196,9 @@ export function useSimulation(): UseSimulationReturn {
 
       simulationIdRef.current = simId
       jurisdictionRef.current = jurisdiction
-      geographicBiasesRef.current = (initData.geographic_biases ?? []) as Record<string, unknown>[]
+      const geoB = (initData.geographic_biases ?? []) as Record<string, unknown>[]
+      geographicBiasesRef.current = geoB
+      setGeographicBiases(geoB)
       activeAgentsRef.current = personas
       setActiveAgents(personas)
 
@@ -203,7 +226,13 @@ export function useSimulation(): UseSimulationReturn {
 
       ws.onopen = () => {
         // Send the debate configuration as the first (and only) client message.
-        ws.send(JSON.stringify({ personas, briefings }))
+        // geographic_biases is included so the backend's live Arbiter can weight
+        // the jury distribution correctly on every turn evaluation.
+        ws.send(JSON.stringify({
+          personas,
+          briefings,
+          geographic_biases: geographicBiasesRef.current,
+        }))
       }
 
       ws.onmessage = (event) => {
@@ -218,9 +247,13 @@ export function useSimulation(): UseSimulationReturn {
             ...prev,
             convergence: Math.min(98, prev.convergence + 2),
           }))
+          // Mark the agent as announced but not yet speaking — dots should not
+          // retarget until the first chunk confirms text is actually flowing.
+          currentTypingAgentIdRef.current = frame.agent_id as string
+          setCurrentTypingAgent(frame.agent_id as string)
+          setIsAgentSpeaking(false)
           // A new agent is about to speak — create a fresh empty message entry.
           const style = resolveAgentStyle(frame.agent_id, activeAgentsRef.current)
-          setCurrentTypingAgent(frame.agent_id as string)
           setDebateTranscript((prev) => [
             ...prev,
             {
@@ -238,6 +271,8 @@ export function useSimulation(): UseSimulationReturn {
             },
           ])
         } else if (frame.type === "chunk") {
+          // First chunk confirms text is actively streaming — unlock dot retargeting.
+          setIsAgentSpeaking(true)
           // Accumulate into the ref (for the verdict payload) and into React state (for the UI).
           currentTurnContentRef.current += (frame.content ?? "")
           setDebateTranscript((prev) => {
@@ -250,6 +285,8 @@ export function useSimulation(): UseSimulationReturn {
             return updated
           })
         } else if (frame.type === "turn_end") {
+          // Turn is over — stop dot retargeting before clearing the typing agent.
+          setIsAgentSpeaking(false)
           // Snapshot the completed turn into the structured list for the Arbiter API.
           const turnLabel =
             activeAgentsRef.current.find((p) => p.id === frame.agent_id)?.label ??
@@ -260,15 +297,27 @@ export function useSimulation(): UseSimulationReturn {
             content: currentTurnContentRef.current.trim(),
           })
           currentTurnContentRef.current = ""
+          currentTypingAgentIdRef.current = null
           setCurrentTypingAgent(null)
+        } else if (frame.type === "live_consensus") {
+          // Real-time Arbiter evaluation — drives the swarm dot reassignment in SwarmForceGraph.
+          const update: LiveConsensusUpdate = {
+            distribution: frame.data.distribution as Record<string, number>,
+            speakerId: frame.data.speaker_id as string,
+          }
+          liveConsensusRef.current = update
+          setLiveConsensus(update)
         } else if (frame.type === "debate_complete") {
           setIsDebateStreaming(false)
+          setIsAgentSpeaking(false)
+          currentTypingAgentIdRef.current = null
           setCurrentTypingAgent(null)
           ws.close()
         } else if (frame.type === "error") {
           setInitError(frame.message ?? "Debate error. Please try again.")
           setSimulationState("intake")
           setIsDebateStreaming(false)
+          setIsAgentSpeaking(false)
           ws.close()
         }
         // "status" frames are informational only — no state update needed.
@@ -278,12 +327,14 @@ export function useSimulation(): UseSimulationReturn {
         setInitError("WebSocket connection failed. Is the backend running?")
         setSimulationState("intake")
         setIsDebateStreaming(false)
+        setIsAgentSpeaking(false)
       }
 
       ws.onclose = () => {
         // Ensure streaming is always false after the socket closes, regardless
         // of which code path triggered the close.
         setIsDebateStreaming(false)
+        setIsAgentSpeaking(false)
         setCurrentTypingAgent(null)
         if (wsRef.current === ws) wsRef.current = null
       }
@@ -320,6 +371,7 @@ export function useSimulation(): UseSimulationReturn {
       wsRef.current = null
     }
     setIsDebateStreaming(false)
+    setIsAgentSpeaking(false)
     setCurrentTypingAgent(null)
 
     const simId = simulationIdRef.current
@@ -328,7 +380,32 @@ export function useSimulation(): UseSimulationReturn {
       return
     }
 
-    // 2. Build the verdict request body from refs (always fresh, no stale closure risk).
+    // 2. Flush any in-progress turn that was interrupted mid-stream.
+    //    If Terminate is clicked while an agent is speaking, the current turn's
+    //    content lives in currentTurnContentRef but was never pushed to
+    //    transcriptTurnsRef (that only happens on turn_end). Capture it now so
+    //    the Arbiter receives the complete debate, not one with the last argument cut off.
+    const inProgressAgentId = currentTypingAgentIdRef.current
+    const inProgressContent = currentTurnContentRef.current.trim()
+    if (inProgressAgentId && inProgressContent) {
+      const inProgressLabel =
+        activeAgentsRef.current.find((p) => p.id === inProgressAgentId)?.label ??
+        inProgressAgentId
+      transcriptTurnsRef.current.push({
+        agent_id: inProgressAgentId,
+        label: inProgressLabel,
+        content: inProgressContent,
+      })
+      currentTurnContentRef.current = ""
+      currentTypingAgentIdRef.current = null
+    }
+
+    // 3. Snapshot the final swarm dot distribution RIGHT NOW before anything
+    //    changes.  This is exactly what the jury was showing when the user
+    //    pressed the button — used to populate the pie chart on the verdict page.
+    const snapshotDistribution = liveConsensusRef.current?.distribution ?? null
+
+    // 4. Build the verdict request body from refs (always fresh, no stale closure risk).
     const body = {
       jurisdiction: jurisdictionRef.current,
       geographic_biases: geographicBiasesRef.current,
@@ -353,22 +430,50 @@ export function useSimulation(): UseSimulationReturn {
       const resolveLabel = (agentId: string) =>
         activeAgentsRef.current.find((p) => p.id === agentId)?.label ?? agentId
 
+      // Build a stable agent-ID → colour map so the same agent always gets the
+      // same colour across both the swarm chart and the analytical chart.
+      const colorMap: Record<string, string> = { Undecided: "#6b7280" }
+      activeAgentsRef.current.forEach((p, i) => {
+        colorMap[p.id] = PALETTE[i % PALETTE.length]
+      })
+      const colorFor = (agentId: string, fallbackIdx: number) =>
+        colorMap[agentId] ?? PALETTE[fallbackIdx % PALETTE.length]
+
       const consensus = (raw.consensus ?? []).map(
         (c: { agent_id: string; percentage: number }, i: number) => ({
           name: resolveLabel(c.agent_id),
           value: c.percentage,
-          color: PALETTE[i % PALETTE.length],
+          color: colorFor(c.agent_id, i),
         })
       )
 
-      // barData mirrors consensus — same agent order, same colours.
+      // barData mirrors the Arbiter's analytical consensus — same colours.
       const barData = (raw.consensus ?? []).map(
         (c: { agent_id: string; percentage: number }, i: number) => ({
           agent: resolveLabel(c.agent_id),
           nodes: c.percentage,
-          fill: PALETTE[i % PALETTE.length],
+          fill: colorFor(c.agent_id, i),
         })
       )
+
+      // swarmConsensus = the dot distribution captured at the moment the button
+      // was pressed, built entirely client-side from snapshotDistribution.
+      // No server round-trip needed — this data was already in the hook.
+      const swarmConsensus = snapshotDistribution
+        ? Object.entries(snapshotDistribution).map(([agentId, pct], i) => ({
+            name: resolveLabel(agentId),
+            value: pct,
+            color: colorFor(agentId, i),
+          }))
+        : null
+
+      const swarmBarData = snapshotDistribution
+        ? Object.entries(snapshotDistribution).map(([agentId, pct], i) => ({
+            agent: resolveLabel(agentId),
+            nodes: pct,
+            fill: colorFor(agentId, i),
+          }))
+        : null
 
       const advantages = (raw.advantages ?? []).map(
         (a: { argument: string; agent_id: string; category: string; weight: number }, i: number) => ({
@@ -404,23 +509,24 @@ export function useSimulation(): UseSimulationReturn {
         deliberationRounds: raw.deliberation_rounds,
         consensus,
         barData,
+        swarmConsensus,
+        swarmBarData,
         advantages,
         flaws,
       }
 
       setVerdictData(verdict)
+      setSimulationState("arbiter-verdict")
     } catch (err) {
       console.error("Verdict fetch failed:", err)
       setInitError(
         err instanceof Error ? err.message : "Arbiter failed to generate a verdict."
       )
+      // On error there is no verdictData to reconcile — transition immediately.
+      setSimulationState("arbiter-verdict")
     } finally {
       setVerdictStep(null)
     }
-
-    // 4. Transition regardless of fetch outcome — if fetch failed, the user
-    //    will see the error banner; if it succeeded, they see the full report.
-    setSimulationState("arbiter-verdict")
   }, [])
 
   // ── Transition: arbiter-verdict → intake (full reset) ───────────────────
@@ -433,15 +539,20 @@ export function useSimulation(): UseSimulationReturn {
     setSimulationState("intake")
     setDebateTranscript([])
     setIsDebateStreaming(false)
+    setIsAgentSpeaking(false)
+    setLiveConsensus(null)
+    liveConsensusRef.current = null
     setCurrentTypingAgent(null)
     setSwarmMetrics({ liveNodes: 100, convergence: 64, geoBiasActive: true })
     setVerdictData(null)
     setActiveAgents([])
+    setGeographicBiases([])
     activeAgentsRef.current = []
     jurisdictionRef.current = ""
     geographicBiasesRef.current = []
     transcriptTurnsRef.current = []
     currentTurnContentRef.current = ""
+    currentTypingAgentIdRef.current = null
     setInitError(null)
     setVerdictStep(null)
     simulationIdRef.current = null
@@ -452,9 +563,12 @@ export function useSimulation(): UseSimulationReturn {
     debateTranscript,
     isDebateStreaming,
     currentTypingAgent,
+    isAgentSpeaking,
+    liveConsensus,
     swarmMetrics,
     verdictData,
     activeAgents,
+    geographicBiases,
     initError,
     verdictStep,
     initializeSimulation,

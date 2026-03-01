@@ -24,7 +24,7 @@ export function LoadingState() {
 
         {/* Shimmer text */}
         <p className="text-sm font-medium text-muted-foreground">
-          Parsing Case Files and Instantiating LLM Archetypes...
+          Parsing Case Information and Witness Testimonials...
         </p>
 
         {/* Progress bar */}

@@ -110,6 +110,15 @@ def _parse_pdf(pdf_bytes: bytes) -> str:
     return "\n\n".join(page.get_text() for page in doc)
 
 
+async def _extract_upload_text(upload: UploadFile) -> str:
+    """Extract text from an uploaded PDF/TXT file."""
+    raw_bytes = await upload.read()
+    content_type = upload.content_type or ""
+    if "pdf" in content_type or (upload.filename or "").lower().endswith(".pdf"):
+        return await asyncio.to_thread(_parse_pdf, raw_bytes)
+    return raw_bytes.decode("utf-8", errors="replace")
+
+
 def _search_tavily(client: TavilyClient, query: str) -> str:
     """Run a Tavily search and return results as a single formatted string.
 
@@ -136,22 +145,24 @@ def _search_tavily(client: TavilyClient, query: str) -> str:
 @app.post("/api/v1/simulation/init", response_model=SimulationInitResponse)
 async def initialize_simulation(
     file: UploadFile = File(...),
+    witness_testimonials: UploadFile | None = File(None),
     jurisdiction: str = Form(...),
 ) -> SimulationInitResponse:
-    # 1. Read and parse the uploaded file
-    raw_bytes = await file.read()
-    content_type = file.content_type or ""
+    # 1. Read and parse uploaded case information and optional testimonials
+    case_info_text = await _extract_upload_text(file)
+    witness_text = ""
+    if witness_testimonials is not None:
+        witness_text = await _extract_upload_text(witness_testimonials)
 
-    if "pdf" in content_type or (file.filename or "").lower().endswith(".pdf"):
-        pdf_text = await asyncio.to_thread(_parse_pdf, raw_bytes)
-    else:
-        pdf_text = raw_bytes.decode("utf-8", errors="replace")
-
-    if not pdf_text.strip():
+    if not case_info_text.strip() and not witness_text.strip():
         raise HTTPException(
             status_code=422,
-            detail="Could not extract any text from the uploaded file.",
+            detail="Could not extract any text from the uploaded files.",
         )
+
+    combined_case_text = case_info_text
+    if witness_text.strip():
+        combined_case_text += f"\n\n=== WITNESS TESTIMONIALS ===\n{witness_text}"
 
     # 2. Pre-pass: ask gpt-4o-mini for a clean 5-to-10 word case summary so the
     #    Tavily query is meaningful rather than raw boilerplate from the PDF header.
@@ -160,7 +171,7 @@ async def initialize_simulation(
             model=INIT_MODEL,
             messages=[
                 {"role": "system", "content": CASE_SUMMARY_SYSTEM_PROMPT},
-                {"role": "user", "content": pdf_text[:1500]},
+                {"role": "user", "content": combined_case_text[:1500]},
             ],
             max_tokens=30,
             temperature=0,
@@ -168,7 +179,7 @@ async def initialize_simulation(
         case_summary = pre_pass.choices[0].message.content.strip()
     except Exception:
         # Non-fatal: fall back to a simple text slice if the pre-pass fails.
-        case_summary = " ".join(pdf_text[:300].split())[:120]
+        case_summary = " ".join(combined_case_text[:300].split())[:120]
 
     # 3. Run Tavily search using the high-quality case summary (non-blocking)
     tavily_query = (
@@ -178,8 +189,14 @@ async def initialize_simulation(
     search_results = await asyncio.to_thread(_search_tavily, tavily, tavily_query)
 
     # 4. Assemble context for the LLM
+    witness_context = (
+        f"\n\n=== WITNESS TESTIMONIALS ===\n{witness_text[:PDF_CHAR_LIMIT]}"
+        if witness_text.strip()
+        else ""
+    )
     context = (
-        f"=== CASE DOCUMENT ===\n{pdf_text[:PDF_CHAR_LIMIT]}\n\n"
+        f"=== CASE INFORMATION ===\n{case_info_text[:PDF_CHAR_LIMIT]}"
+        f"{witness_context}\n\n"
         f"=== JURISDICTIONAL RESEARCH: {jurisdiction} ===\n{search_results}"
     )
 

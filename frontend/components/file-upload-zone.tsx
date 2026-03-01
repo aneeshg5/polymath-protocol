@@ -8,9 +8,10 @@ interface FileUploadZoneProps {
   /** Called with the first file in the list whenever the selection changes.
    *  Receives null when all files are removed. */
   onFileChange?: (file: File | null) => void
+  ariaLabel?: string
 }
 
-export function FileUploadZone({ onFileChange }: FileUploadZoneProps) {
+export function FileUploadZone({ onFileChange, ariaLabel = "Upload files" }: FileUploadZoneProps) {
   const [files, setFiles] = useState<File[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
 
@@ -59,7 +60,7 @@ export function FileUploadZone({ onFileChange }: FileUploadZoneProps) {
           multiple
           onChange={handleFileInput}
           className="absolute inset-0 z-10 cursor-pointer opacity-0"
-          aria-label="Upload case files"
+          aria-label={ariaLabel}
         />
         <div className={cn(
           "flex size-10 items-center justify-center rounded-lg transition-colors duration-300",

@@ -53,7 +53,7 @@ function getDepthLabel(value: number) {
 }
 
 interface IntakeFormProps {
-  onInitialize: (file: File, jurisdiction: string) => void
+  onInitialize: (caseFile: File, jurisdiction: string, witnessTestimonialsFile: File | null) => void
   /** Error message from the hook if the last /init call failed */
   initError?: string | null
 }
@@ -61,13 +61,14 @@ interface IntakeFormProps {
 export function IntakeForm({ onInitialize, initError }: IntakeFormProps) {
   const [depth, setDepth] = useState([50])
   const [jurisdiction, setJurisdiction] = useState("")
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [selectedCaseFile, setSelectedCaseFile] = useState<File | null>(null)
+  const [witnessTestimonialsFile, setWitnessTestimonialsFile] = useState<File | null>(null)
   const [validationError, setValidationError] = useState<string | null>(null)
 
-  const canSubmit = selectedFile !== null && jurisdiction !== ""
+  const canSubmit = selectedCaseFile !== null && jurisdiction !== ""
 
   function handleSubmit() {
-    if (!selectedFile) {
+    if (!selectedCaseFile) {
       setValidationError("Please upload a case document before initializing.")
       return
     }
@@ -76,7 +77,7 @@ export function IntakeForm({ onInitialize, initError }: IntakeFormProps) {
       return
     }
     setValidationError(null)
-    onInitialize(selectedFile, jurisdiction)
+    onInitialize(selectedCaseFile, jurisdiction, witnessTestimonialsFile)
   }
 
   const displayError = validationError ?? initError ?? null
@@ -101,13 +102,28 @@ export function IntakeForm({ onInitialize, initError }: IntakeFormProps) {
         </CardHeader>
 
         <CardContent className="flex flex-col gap-6 pt-4">
-          {/* File Upload */}
+          {/* Case Information Upload */}
           <div className="flex flex-col gap-2.5">
             <Label className="text-sm text-foreground">
-              Case Files & Evidence
+              Case Information
               <span className="ml-1.5 text-xs font-normal text-muted-foreground">(PDF / TXT)</span>
             </Label>
-            <FileUploadZone onFileChange={setSelectedFile} />
+            <FileUploadZone
+              onFileChange={setSelectedCaseFile}
+              ariaLabel="Upload case information files"
+            />
+          </div>
+
+          {/* Witness Testimonials Upload */}
+          <div className="flex flex-col gap-2.5">
+            <Label className="text-sm text-foreground">
+              Witness Testimonials
+              <span className="ml-1.5 text-xs font-normal text-muted-foreground">(Optional, PDF / TXT)</span>
+            </Label>
+            <FileUploadZone
+              onFileChange={setWitnessTestimonialsFile}
+              ariaLabel="Upload witness testimonials files"
+            />
           </div>
 
           {/* Jurisdiction Select */}

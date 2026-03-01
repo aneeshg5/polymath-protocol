@@ -86,7 +86,11 @@ export interface UseSimulationReturn {
   verdictStep: string | null
 
   /** Transition: intake → loading → war-room (real API + WebSocket) */
-  initializeSimulation: (file: File, jurisdiction: string) => Promise<void>
+  initializeSimulation: (
+    caseFile: File,
+    jurisdiction: string,
+    witnessTestimonialsFile: File | null
+  ) => Promise<void>
 
   /** Transition: war-room → arbiter-verdict (calls Arbiter API, then transitions) */
   terminateSimulation: () => Promise<void>
@@ -141,14 +145,21 @@ export function useSimulation(): UseSimulationReturn {
 
   // ── Transition: intake → loading → war-room ─────────────────────────────
 
-  const initializeSimulation = useCallback(async (file: File, jurisdiction: string) => {
+  const initializeSimulation = useCallback(async (
+    caseFile: File,
+    jurisdiction: string,
+    witnessTestimonialsFile: File | null
+  ) => {
     setInitError(null)
     setSimulationState("loading")
 
     try {
       // ── Phase 1a: POST /init ─────────────────────────────────────────────
       const formData = new FormData()
-      formData.append("file", file)
+      formData.append("file", caseFile)
+      if (witnessTestimonialsFile) {
+        formData.append("witness_testimonials", witnessTestimonialsFile)
+      }
       formData.append("jurisdiction", jurisdiction)
       // Do NOT set Content-Type — fetch injects the multipart boundary automatically
 

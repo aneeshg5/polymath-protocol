@@ -79,7 +79,10 @@ class LegalAgentEngine:
             "your strategic approach from your assigned perspective. Structure it as:\n"
             "  Paragraph 1 — Core legal theory and your strongest arguments.\n"
             "  Paragraph 2 — Key precedents and statutes you will invoke.\n"
-            "  Paragraph 3 — Anticipated counter-arguments and your rebuttals."
+            "  Paragraph 3 — Anticipated counter-arguments and your rebuttals.\n\n"
+            "IMPORTANT: When the case facts include witness testimonials, cite specific "
+            "witnesses by name or role when referencing their statements (e.g., 'Witness A testified that...' "
+            "or 'According to Officer Smith's testimony...')."
             "<|eot_id|>"
             "<|start_header_id|>assistant<|end_header_id|>\n\n"
         )
@@ -151,7 +154,8 @@ class LegalAgentEngine:
                 "Give a punchy, aggressive OPENING STATEMENT in maximum 3 sentences "
                 "outlining your core legal argument. "
                 "Address the other participants by their specific label when relevant. "
-                "Do not use generic terms like 'opposing counsel'. No filler words."
+                "Do not use generic terms like 'opposing counsel'. No filler words. "
+                "Cite specific witness testimonials by name when referencing their statements."
             )
         else:
             # Extract only the immediately preceding turn so the 8B model's
@@ -169,7 +173,8 @@ class LegalAgentEngine:
                 "Point out the specific legal flaw, logical fallacy, or weak precedent "
                 "in what they said, then counter it with your strategy. "
                 "Address participants by their specific label — never say 'opposing counsel'. "
-                "Keep it UNDER 3 SENTENCES. No pleasantries."
+                "Keep it UNDER 3 SENTENCES. No pleasantries. "
+                "Cite specific witness testimonials by name when referencing their statements."
             )
 
         # Llama 3 Instruct requires the chat-ML special tokens; plain prompts

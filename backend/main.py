@@ -50,7 +50,11 @@ Given a case document and jurisdictional research, produce:
      exclusively from that legal stance.
 
 Be precise. Cite specific statutes and case names where possible. Ensure personas
-represent genuinely adversarial legal philosophies.\
+represent genuinely adversarial legal philosophies.
+
+IMPORTANT: When creating system_prompt fields for personas, instruct them to cite specific 
+witness testimonials by name or role when referencing factual claims from witness statements 
+(e.g., 'Officer Smith testified that...' or 'According to Witness A...').\
 """
 
 CASE_SUMMARY_SYSTEM_PROMPT = (

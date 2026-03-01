@@ -57,7 +57,7 @@ export default function Page() {
         )}
 
         {simulationState === "arbiter-verdict" && verdictData && (
-          <ArbiterVerdict data={verdictData} onNewCase={startNewCase} />
+          <ArbiterVerdict data={verdictData} onNewCase={startNewCase} activeAgents={activeAgents} />
         )}
       </main>
     </div>

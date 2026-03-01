@@ -39,6 +39,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   Table,
   TableBody,
@@ -52,7 +53,7 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from "@/components/ui/chart"
-import type { VerdictData } from "@/lib/types"
+import type { VerdictData, ActivePersona } from "@/lib/types"
 import { SEVERITY_COLORS } from "@/lib/types"
 
 // ── Props ───────────────────────────────────────────────────────────────────
@@ -62,6 +63,8 @@ interface ArbiterVerdictProps {
   data: VerdictData
   /** Called when the user clicks "Start New Case" */
   onNewCase: () => void
+  /** Active agent personas for archetype tooltips */
+  activeAgents: ActivePersona[]
 }
 
 // ── Framer Motion variants ──────────────────────────────────────────────────
@@ -81,7 +84,12 @@ const itemVariants = {
 
 // ── Component ───────────────────────────────────────────────────────────────
 
-export function ArbiterVerdict({ data, onNewCase }: ArbiterVerdictProps) {
+export function ArbiterVerdict({ data, onNewCase, activeAgents }: ArbiterVerdictProps) {
+  // Helper to find archetype by agent label
+  const getArchetype = (agentLabel: string) => {
+    const agent = activeAgents.find(a => a.label === agentLabel)
+    return agent?.archetype_name ?? "Agent"
+  }
   return (
     <motion.div
       variants={containerVariants}
@@ -174,7 +182,14 @@ export function ArbiterVerdict({ data, onNewCase }: ArbiterVerdictProps) {
                     <div key={entry.name} className="flex items-center justify-between text-xs">
                       <span className="flex items-center gap-2">
                         <span className="size-2 rounded-full" style={{ backgroundColor: entry.color }} />
-                        <span className="text-muted-foreground">{entry.name}</span>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="cursor-help text-muted-foreground hover:text-foreground transition-colors">{entry.name}</span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p className="font-medium">{getArchetype(entry.name)}</p>
+                          </TooltipContent>
+                        </Tooltip>
                       </span>
                       <span className="font-mono text-foreground">{entry.value}%</span>
                     </div>
@@ -303,7 +318,14 @@ export function ArbiterVerdict({ data, onNewCase }: ArbiterVerdictProps) {
                         <TableCell className="max-w-[280px] text-xs text-secondary-foreground">
                           <div className="flex flex-col gap-0.5">
                             <span className="whitespace-normal leading-snug">{row.argument}</span>
-                            <span className="font-mono text-[10px] text-muted-foreground">{row.agent}</span>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="cursor-help font-mono text-[10px] text-muted-foreground hover:text-foreground transition-colors">{row.agent}</span>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p className="font-medium">{getArchetype(row.agent)}</p>
+                              </TooltipContent>
+                            </Tooltip>
                           </div>
                         </TableCell>
                         <TableCell>
@@ -351,7 +373,14 @@ export function ArbiterVerdict({ data, onNewCase }: ArbiterVerdictProps) {
                         <TableCell className="max-w-[280px] text-xs text-secondary-foreground">
                           <div className="flex flex-col gap-0.5">
                             <span className="whitespace-normal leading-snug">{row.flaw}</span>
-                            <span className="font-mono text-[10px] text-muted-foreground">{row.agent}</span>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="cursor-help font-mono text-[10px] text-muted-foreground hover:text-foreground transition-colors">{row.agent}</span>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p className="font-medium">{getArchetype(row.agent)}</p>
+                              </TooltipContent>
+                            </Tooltip>
                           </div>
                         </TableCell>
                         <TableCell>
